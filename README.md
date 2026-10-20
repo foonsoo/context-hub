@@ -11,7 +11,7 @@ AI 코딩 클라이언트(Claude Code, Codex, Cursor 등)가 달라져도, 세�
 
 ```bash
 # 아직 PyPI 배포 전입니다. 소스에서 설치합니다 (Python 3.11+, macOS·Linux).
-pipx install git+https://github.com/foonsoo/context-memory@vnext/context-hub
+pipx install git+https://github.com/foonsoo/context-hub
 #   또는 체크아웃에서: pip install .
 ctx init                         # ~/context-hub 생성, 등록 계획만 보여 줌 (아무것도 바꾸지 않음)
 ctx init --register              # Claude Code·Codex·Cursor에 MCP·규칙·훅 등록
