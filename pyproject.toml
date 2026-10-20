@@ -1,112 +1,27 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
 
 [project]
-name = "context-memory-mcp"
-version = "0.6.2"
-description = "Local-first, provenance-preserving context memory MCP server"
+name = "context-hub"
+version = "0.1.0"
+description = "Client-neutral context sharing and knowledge curation for AI coding agents"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
-license = {text = "MIT"}
-authors = [{name = "Context Memory contributors"}]
 dependencies = []
-classifiers = [
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
-  "Programming Language :: Python :: 3.13",
-  "Programming Language :: Python :: 3.14",
-  "Operating System :: OS Independent",
-  "Topic :: Database",
-]
-
-[project.urls]
-Repository = "https://github.com/foonsoo/context-memory"
-Issues = "https://github.com/foonsoo/context-memory/issues"
-Documentation = "https://github.com/foonsoo/context-memory/tree/main/docs"
-Changelog = "https://github.com/foonsoo/context-memory/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-crypto = ["cryptography>=42"]
-dev = ["ruff==0.16.1"]
-neural = ["sentence-transformers>=3,<6"]
+llm = ["anthropic>=1.0"]
+test = ["pytest>=8"]
 
 [project.scripts]
-context-memory = "context_memory.cli:main"
+ctx = "context_hub.cli:main"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/context_memory"]
+[tool.setuptools.packages.find]
+where = ["src"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"migrations" = "migrations"
-
-[tool.ruff]
-target-version = "py311"
-line-length = 79
-include = [
-  "src/context_memory/__init__.py",
-  "src/context_memory/audit_anchor.py",
-  "src/context_memory/audit_serialization.py",
-  "src/context_memory/backup_crypto.py",
-  "src/context_memory/checkpoint_policy.py",
-  "src/context_memory/clock.py",
-  "src/context_memory/cli.py",
-  "src/context_memory/contracts.py",
-  "src/context_memory/context_assembly.py",
-  "src/context_memory/decision_assembly.py",
-  "src/context_memory/embeddings.py",
-  "src/context_memory/hooks.py",
-  "src/context_memory/hosted_api.py",
-  "src/context_memory/hosted_administration.py",
-  "src/context_memory/hosted_authorization.py",
-  "src/context_memory/hosted_content.py",
-  "src/context_memory/hosted_governance.py",
-  "src/context_memory/hosted_identity.py",
-  "src/context_memory/hosted_limits.py",
-  "src/context_memory/hosted_operations.py",
-  "src/context_memory/hosted_http.py",
-  "src/context_memory/hosted_repository.py",
-  "src/context_memory/hosted_transport.py",
-  "src/context_memory/mcp.py",
-  "src/context_memory/mcp_schema.py",
-  "src/context_memory/mcp_tools.py",
-  "src/context_memory/mcp_tools_admin.py",
-  "src/context_memory/mcp_tools_checkpoint_events.py",
-  "src/context_memory/mcp_tools_investigation.py",
-  "src/context_memory/mcp_tools_lifecycle.py",
-  "src/context_memory/mcp_tools_memory.py",
-  "src/context_memory/mcp_tools_wiki.py",
-  "src/context_memory/persistence/__init__.py",
-  "src/context_memory/persistence/checkpoint.py",
-  "src/context_memory/persistence/investigation.py",
-  "src/context_memory/persistence/maintenance.py",
-  "src/context_memory/persistence/memory.py",
-  "src/context_memory/persistence/operations.py",
-  "src/context_memory/persistence/primitives.py",
-  "src/context_memory/persistence/project_evidence.py",
-  "src/context_memory/persistence/retrieval.py",
-  "src/context_memory/persistence/review.py",
-  "src/context_memory/persistence/transfer.py",
-  "src/context_memory/persistence/wiki.py",
-  "src/context_memory/retrieval.py",
-  "src/context_memory/recall.py",
-  "src/context_memory/serialization.py",
-  "src/context_memory/store.py",
-  "src/context_memory/tasks.py",
-  "src/context_memory/validation.py",
-  "src/context_memory/wiki_lint.py",
-  "src/context_memory/wiki_rendering.py",
-  "scripts/verify_release.py",
-]
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "N", "W"]
-
-[tool.ruff.lint.pycodestyle]
-max-doc-length = 72
-
-[tool.ruff.format]
-indent-style = "space"
-line-ending = "lf"
-quote-style = "double"
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = ["slow: builds and installs a wheel"]

@@ -1,11 +1,7 @@
 __pycache__/
 *.py[cod]
-.venv/
-.context-memory/
-*.db
-*.db-shm
-*.db-wal
-dist/
-build/
 *.egg-info/
-work/
+.venv/
+build/
+dist/
+.pytest_cache/

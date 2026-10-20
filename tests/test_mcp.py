@@ -1,309 +1,112 @@
 import json
-import tempfile
-import unittest
-from pathlib import Path
+import os
+import subprocess
+import sys
 
-from context_memory.mcp import CORE_TOOL_NAMES, MCPServer, TOOLS, TOOL_BY_NAME, validate_json
-from context_memory.contracts import PROMOTABLE_EVENT_KINDS
-from context_memory.mcp_tools import MINIMAL_TOOL_NAMES
-from context_memory.store import MemoryStore
+import pytest
+
+from context_hub.hub import Project
 
 
-class MCPTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(); self.store = MemoryStore(Path(self.temp.name) / "memory.db"); self.server = MCPServer(self.store)
-    def tearDown(self): self.store.close(); self.temp.cleanup()
-
-    def test_initialize_list_and_tool_call(self):
-        init = self.server.handle({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}})
-        self.assertEqual(init["result"]["capabilities"]["tools"], {"listChanged": False})
-        tool_names, cursor = [], None
-        while True:
-            params = {"cursor": cursor} if cursor is not None else {}
-            page = self.server.handle({"jsonrpc":"2.0","id":2,"method":"tools/list","params":params})["result"]
-            tool_names.extend(tool["name"] for tool in page["tools"])
-            cursor = page.get("nextCursor")
-            if cursor is None: break
-        self.assertEqual(tool_names, [tool["name"] for tool in TOOLS])
-        created = self.server.handle({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"project_create","arguments":{"slug":"mcp-demo"}}})
-        value = created["result"]["structuredContent"]["result"]
-        self.assertEqual(value["slug"], "mcp-demo"); self.assertEqual(json.loads(created["result"]["content"][0]["text"])["id"], value["id"])
-        recorded = self.server.handle({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"record_event","arguments":{"project_id":value["id"],"kind":"message","content":"hello next session"}}})
-        event = recorded["result"]["structuredContent"]["result"]
-        polled = self.server.handle({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_events_since","arguments":{"project_id":value["id"],"cursor":0,"kinds":["message"]}}})
-        stream = polled["result"]["structuredContent"]["result"]
-        self.assertEqual(stream["events"][0]["id"], event["id"]); self.assertEqual(stream["next_cursor"], event["event_seq"])
-        durable = self.server.call("event_poll", {"project_id":value["id"],"consumer_id":"mcp-test","kinds":["message"]})
-        self.assertEqual(durable["events"][0]["id"], event["id"])
-        receipt = self.server.call("event_ack", {"project_id":value["id"],"consumer_id":"mcp-test","cursor":durable["next_cursor"],"kinds":["message"]})
-        self.assertEqual(receipt["acknowledged_cursor"], event["event_seq"])
-        checkpointed = self.server.handle({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"checkpoint_create","arguments":{
-            "project_id":value["id"],"mode":"interim","reason":"manual","goal":"Resume MCP test","idempotency_key":"mcp-checkpoint",
-            "test_results":[{"name":"MCP test","status":"passed"}]
-        }}})
-        checkpoint = checkpointed["result"]["structuredContent"]["result"]
-        self.assertEqual(checkpoint["mode"], "interim")
-        self.assertEqual(checkpoint["objective"]["test_results"][0]["status"], "passed")
-        evaluated = self.server.handle({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"checkpoint_evaluate","arguments":{
-            "project_id":value["id"],"context_usage":.9,"goal":"Resume MCP test"
-        }}})["result"]["structuredContent"]["result"]
-        self.assertFalse(evaluated["should_checkpoint"])
-        self.assertEqual(evaluated["suppression"], "unchanged_recovery_state")
-        self.assertTrue(evaluated["suggested_idempotency_key"].startswith("checkpoint:"))
-
-    def test_notification_has_no_response(self):
-        self.assertIsNone(self.server.handle({"jsonrpc":"2.0","method":"notifications/initialized"}))
-
-    def test_bootstrap_combines_startup_and_is_idempotent(self):
-        response = self.server.handle({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"context_bootstrap","arguments":{
-            "cwd":self.temp.name,"query":"next work","client":"test","external_id":"same","response_format":"compact"
-        }}})
-        first = response["result"]["structuredContent"]["result"]
-        second = self.server.call("context_bootstrap", {"cwd":self.temp.name,"query":"next work","client":"test","external_id":"same","response_format":"compact"})
-        self.assertEqual(first["session"]["id"], second["session"]["id"])
-        self.assertEqual(first["project"]["id"], second["project"]["id"])
-        self.assertEqual(first["context"]["response_format"], "compact")
-
-    def test_bootstrap_surfaces_recent_unpromoted_handoff_by_default(self):
-        resolved = self.store.resolve_project(self.temp.name)
-        project_id = resolved["project"]["id"]
-        for index in range(8):
-            self.store.record_event(
-                project_id,
-                "task",
-                f"handoff {index}",
-                scope_id=resolved["scope_id"],
-            )
-        expected_path = "/workspace/official/context-memory"
-        latest = self.store.record_event(
-            project_id,
-            "summary",
-            f"Draft is stored at {expected_path}",
-            scope_id=resolved["scope_id"],
+class Client:
+    def __init__(self, cwd):
+        self.proc = subprocess.Popen(
+            [sys.executable, "-m", "context_hub.cli", "serve"], cwd=cwd,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ},
         )
+        self.next_id = 0
 
-        result = self.server.call(
-            "context_bootstrap",
-            {
-                "cwd": self.temp.name,
-                "query": "blog draft",
-                "client": "test",
-                "external_id": "recent-tail",
-                "response_format": "compact",
-            },
-        )
+    def send_raw(self, line: str):
+        self.proc.stdin.write(line + "\n")
+        self.proc.stdin.flush()
 
-        context = result["context"]
-        self.assertTrue(context["startup_event_tail"]["implicit"])
-        self.assertEqual(
-            context["recent_events"][-1]["event_id"], latest["id"]
-        )
-        self.assertIn(expected_path, context["recent_events"][-1]["text"])
-        self.assertLessEqual(len(context["recent_events"]), 3)
-        self.assertNotIn("metadata", context["recent_events"][-1])
+    def read(self):
+        line = self.proc.stdout.readline()
+        assert line, self.proc.stderr.read()
+        return json.loads(line)
 
-    def test_bootstrap_event_budget_preserves_newest_handoff(self):
-        resolved = self.store.resolve_project(self.temp.name)
-        project_id = resolved["project"]["id"]
-        self.store.record_event(
-            project_id,
-            "task",
-            "older " + "x" * 300,
-            scope_id=resolved["scope_id"],
-        )
-        latest = self.store.record_event(
-            project_id,
-            "summary",
-            "newest repository path: /workspace/official",
-            scope_id=resolved["scope_id"],
-        )
+    def call(self, method, params=None):
+        self.next_id += 1
+        self.send_raw(json.dumps({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params or {}}))
+        response = self.read()
+        assert response["id"] == self.next_id
+        return response
 
-        result = self.server.call(
-            "context_bootstrap",
-            {
-                "cwd": self.temp.name,
-                "query": "repository path",
-                "event_char_budget": 80,
-                "response_format": "compact",
-            },
-        )
+    def tool(self, name, **arguments):
+        return self.call("tools/call", {"name": name, "arguments": arguments})["result"]
 
-        events = result["context"]["recent_events"]
-        self.assertEqual(events[-1]["event_id"], latest["id"])
-        self.assertIn("/workspace/official", events[-1]["text"])
-
-    def test_bootstrap_skips_event_tail_when_memory_covers_latest_evidence(self):
-        resolved = self.store.resolve_project(self.temp.name)
-        event = self.store.record_event(
-            resolved["project"]["id"],
-            "task",
-            "Implement adaptive bootstrap retrieval",
-            scope_id=resolved["scope_id"],
-        )
-        self.store.upsert_memory(
-            resolved["project"]["id"],
-            "Adaptive bootstrap",
-            "Implement adaptive bootstrap retrieval",
-            "task",
-            "active",
-            scope_id=resolved["scope_id"],
-            source_event_ids=[event["id"]],
-        )
-
-        result = self.server.call(
-            "context_bootstrap",
-            {
-                "cwd": self.temp.name,
-                "query": "adaptive bootstrap retrieval",
-                "response_format": "compact",
-            },
-        )
-
-        context = result["context"]
-        self.assertEqual(context["recent_events"], [])
-        self.assertFalse(context["startup_event_tail"]["included"])
-        self.assertEqual(context["startup_event_tail"]["fallback_reasons"], [])
-
-    def test_tool_profiles_split_working_and_administrative_surfaces(self):
-        core = MCPServer(self.store, "core")
-        admin = MCPServer(self.store, "admin")
-        core_names = {tool["name"] for tool in core.tools}
-        admin_names = {tool["name"] for tool in admin.tools}
-        self.assertEqual(core_names, CORE_TOOL_NAMES)
-        self.assertFalse(core_names & admin_names)
-        self.assertEqual(core_names | admin_names, {tool["name"] for tool in TOOLS})
-        denied = admin.handle({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_context","arguments":{"project_id":"x","query":"q"}}})
-        self.assertEqual(denied["error"]["code"], -32602)
-
-    def test_minimal_profile_exposes_only_complete_basic_lifecycle(self):
-        minimal = MCPServer(self.store, "minimal")
-        self.assertEqual(
-            {tool["name"] for tool in minimal.tools}, MINIMAL_TOOL_NAMES
-        )
-        initialized = minimal.handle(
-            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
-        )
-        instructions = initialized["result"]["instructions"]
-        self.assertNotIn("review_queue", instructions)
-        self.assertNotIn("wiki_", instructions)
-        for name in MINIMAL_TOOL_NAMES:
-            self.assertIn(name, instructions)
-
-    def test_record_event_description_uses_durable_kind_contract(self):
-        description = TOOL_BY_NAME["record_event"]["description"]
-        for kind in PROMOTABLE_EVENT_KINDS:
-            self.assertIn(f"`{kind}`", description)
-        self.assertIn("Other kinds", description)
-
-    def test_decision_context_is_read_only_core_tool(self):
-        self.assertIn("decision_context", CORE_TOOL_NAMES)
-        self.assertTrue(TOOL_BY_NAME["decision_context"]["annotations"]["readOnlyHint"])
-        p = self.store.create_project("brief-tool")
-        event = self.store.record_event(p["id"], "decision", "Use the existing retrieval stack")
-        memory = self.store.upsert_memory(p["id"], "Architecture", "Reuse get_context", "decision", "active", source_event_ids=[event["id"]])
-        brief = self.server.call("decision_context", {"project_id":p["id"], "question":"retrieval architecture"})
-        self.assertEqual(brief["current_decisions"][0]["citations"]["memory_id"], memory["id"])
-
-    def test_research_provenance_tools_are_core_and_enforce_inference_review(self):
-        self.assertTrue({"investigation_create","investigation_record_source","investigation_get","investigation_complete",
-                         "source_reinspection_request"} <= CORE_TOOL_NAMES)
-        p = self.store.create_project("mcp-investigation")
-        investigation = self.server.call("investigation_create", {
-            "project_id":p["id"],"question":"Which API?","reason":"Compatibility matters",
-            "decision_to_inform":"Select an API","initiator":"user"})
-        recorded = self.server.call("investigation_record_source", {
-            "investigation_id":investigation["id"],
-            "source":{"source_type":"docs","stable_source_id":"api","source_version":"3",
-                      "access_reason":"Check compatibility","analysis_method":"claim extraction"},
-            "claims":[{"key":"fact","role":"evidence","content":"Version three is compatible"},
-                      {"key":"guess","role":"inference","content":"Migration should be safe","evidence_claim_keys":["fact"]}]
-        })
-        inference = recorded["claims"][1]
-        self.assertEqual(inference["memory_status"], "proposed")
-        self.assertEqual(self.server.call("investigation_get", {"investigation_id":investigation["id"]})["source_analyses"][0]["id"],
-                         recorded["source_analysis_id"])
-        requested = self.server.call("source_reinspection_request", {
-            "source_analysis_id":recorded["source_analysis_id"],"reason":"unavailable","details":"Client received 404"})
-        self.assertEqual(requested["reason"], "unavailable")
-        self.assertFalse(requested["execution"]["core_fetch_performed"])
-
-    def test_topic_wiki_tools_are_core(self):
-        expected = {"wiki_page_create","wiki_note_set","wiki_revision_generate","wiki_revision_transition",
-                    "wiki_page_get","wiki_browse","wiki_revision_render","wiki_markdown_export","wiki_revision_lint"}
-        self.assertTrue(expected <= CORE_TOOL_NAMES)
-
-    def test_confluence_like_source_examples_match_generic_tool_schemas(self):
-        example_path = Path(__file__).parents[1] / "examples" / "confluence-like-source-workflow.json"
-        workflow = json.loads(example_path.read_text(encoding="utf-8"))
-        self.assertEqual(workflow["contract_version"], "client-source-workflow/v1")
-        self.assertEqual({item["name"] for item in workflow["examples"]}, {
-            "record_initial_page_analysis", "request_and_record_newer_page_version"})
-        self.assertEqual(workflow["boundary"], {
-            "authorization_owner":"client", "page_retrieval_owner":"client",
-            "core_stores_full_page":False, "core_stores_credentials":False})
-        call_names = []
-        for example in workflow["examples"]:
-            for call in example["mcp_calls"]:
-                call_names.append(call["name"])
-                self.assertIn(call["name"], CORE_TOOL_NAMES)
-                validate_json(call["arguments"], TOOL_BY_NAME[call["name"]]["inputSchema"])
-        self.assertEqual(call_names, ["investigation_create", "investigation_record_source",
-                                      "source_reinspection_request", "investigation_record_source"])
-        serialized = json.dumps(workflow).casefold()
-        for forbidden in ("access_token", "authorization_header", "cookie", "page_body", "page_content"):
-            self.assertNotIn(forbidden, serialized)
-        project = self.store.create_project("source-client-example")
-        scope = self.store.create_scope(project["id"], "example")
-        values = {"$PROJECT_ID":project["id"], "$SCOPE_ID":scope["id"]}
-        for example in workflow["examples"]:
-            for call in example["mcp_calls"]:
-                arguments = json.loads(json.dumps(call["arguments"])
-                                       .replace("$PROJECT_ID", values["$PROJECT_ID"])
-                                       .replace("$SCOPE_ID", values["$SCOPE_ID"])
-                                       .replace("$investigation_id", values.get("$investigation_id", "$investigation_id"))
-                                       .replace("$source_analysis_id", values.get("$source_analysis_id", "$source_analysis_id")))
-                result = self.server.call(call["name"], arguments)
-                if call["name"] == "investigation_create": values["$investigation_id"] = result["id"]
-                if call["name"] == "investigation_record_source" and "$source_analysis_id" not in values:
-                    values["$source_analysis_id"] = result["source_analysis_id"]
-        chain = self.store.get_investigation(values["$investigation_id"])
-        self.assertEqual([item["source_version"] for item in chain["source_analyses"]], ["42", "43"])
-        self.assertEqual(chain["source_analyses"][0]["reinspection_requests"][0]["known_source_version"], "43")
-
-    def test_external_http_requires_token(self):
-        with self.assertRaisesRegex(ValueError, "refusing external bind"): self.server.serve_http("0.0.0.0", 0)
-
-    def test_tools_list_rejects_invalid_cursor(self):
-        response = self.server.handle({"jsonrpc":"2.0", "id":1, "method":"tools/list", "params":{"cursor":"not-a-cursor"}})
-        self.assertEqual(response["error"]["code"], -32602)
-        non_object = self.server.handle({"jsonrpc":"2.0", "id":2, "method":"tools/list", "params":[]})
-        self.assertEqual(non_object["error"]["code"], -32602)
-
-    def test_reserved_request_metadata_is_accepted_and_ignored(self):
-        listed = self.server.handle({"jsonrpc":"2.0", "id":1, "method":"tools/list", "params":{"_meta":{"progressToken":"sdk"}}})
-        self.assertIn("tools", listed["result"])
-        called = self.server.handle({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{
-            "name":"project_resolve", "arguments":{"cwd":"/tmp"}, "_meta":{"progressToken":"sdk"},
-        }})
-        self.assertNotIn("error", called)
-
-    def test_tool_arguments_are_validated_against_declared_schema(self):
-        cases = [
-            {"name":"project_resolve", "arguments":{}},
-            {"name":"project_resolve", "arguments":{"cwd":"/tmp", "unexpected":True}},
-            {"name":"read_events_since", "arguments":{"project_id":"p", "limit":0}},
-            {"name":"memory_upsert", "arguments":{"project_id":"p", "title":"t", "content":"c", "confidence":True}},
-            {"name":"memory_upsert", "arguments":{"project_id":"p", "title":"t", "content":"c", "memory_type":"unknown"}},
-            {"name":"checkpoint_create", "arguments":{"project_id":"p", "mode":"unknown", "reason":"manual", "goal":"g", "idempotency_key":"k"}},
-            {"name":"search_alias_set", "arguments":{"project_id":"p", "term":"db", "aliases":["database", 7]}},
-            {"name":"project_resolve", "arguments":[]},
-        ]
-        for index, params in enumerate(cases, 1):
-            with self.subTest(params=params):
-                response = self.server.handle({"jsonrpc":"2.0", "id":index, "method":"tools/call", "params":params})
-                self.assertEqual(response["error"]["code"], -32602)
-        valid = self.server.handle({"jsonrpc":"2.0", "id":100, "method":"tools/call", "params":{"name":"project_resolve", "arguments":{"cwd":"/tmp"}}})
-        self.assertNotIn("error", valid)
+    def close(self):
+        self.proc.stdin.close()
+        assert self.proc.wait(10) == 0
 
 
-if __name__ == "__main__": unittest.main()
+@pytest.fixture
+def client(hub, tmp_path):
+    work = tmp_path / "svc"
+    work.mkdir()
+    hub.add_project(Project("svc", name="Service", aliases=["서비스"], paths=[str(work)]))
+    c = Client(work)
+    yield c
+    c.close()
+
+
+def test_handshake_and_tool_list(client):
+    init = client.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                      "clientInfo": {"name": "claude-code", "version": "x"}})
+    assert init["result"]["protocolVersion"] == "2025-06-18"
+    assert init["result"]["serverInfo"]["name"] == "context-hub"
+    assert "recall" in init["result"]["instructions"]
+    client.send_raw(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+    tools = client.call("tools/list")["result"]["tools"]
+    assert [t["name"] for t in tools] == ["recall", "note", "handoff"]
+    assert all(t["inputSchema"]["additionalProperties"] is False for t in tools)
+    assert client.call("ping")["result"] == {}
+
+
+def test_unknown_protocol_gets_latest(client):
+    assert client.call("initialize", {"protocolVersion": "1999-01-01"})["result"]["protocolVersion"]
+
+
+def test_note_then_recall_uses_server_cwd(client):
+    client.call("initialize", {"protocolVersion": "2025-06-18"})
+    result = client.tool("note", text="결정: 배포는 화요일에만 한다")
+    assert result["isError"] is False and "svc" in result["content"][0]["text"]
+    result = client.tool("handoff", done=["배포 규칙 정리"], next=["배포 스크립트 수정"])
+    assert result["isError"] is False
+    text = client.tool("recall", query="배포 언제 하기로 했지")["content"][0]["text"]
+    assert "화요일" in text and "배포 스크립트 수정" in text
+
+
+def test_errors_are_tool_errors_not_crashes(client):
+    bad = client.tool("note", text="x", kind="nonsense")
+    assert bad["isError"] and "kind" in bad["content"][0]["text"]
+    bad = client.tool("recall", query="x", extra=1)
+    assert bad["isError"] and "unknown argument" in bad["content"][0]["text"]
+    bad = client.tool("recall")
+    assert bad["isError"] and "query" in bad["content"][0]["text"]
+    bad = client.tool("handoff", next="not a list")
+    assert bad["isError"]
+    bad = client.tool("handoff", project="없는프로젝트", next=["x"])
+    assert bad["isError"] and "찾지 못했습니다" in bad["content"][0]["text"]
+    assert "error" in client.call("tools/call", {"name": "nope", "arguments": {}})
+    assert client.call("bogus/method")["error"]["code"] == -32601
+    client.send_raw("{not json")
+    assert client.read()["error"]["code"] == -32700
+    assert client.call("ping")["result"] == {}, "server survives every error above"
+
+
+def test_batch_requests(client):
+    client.send_raw(json.dumps([
+        {"jsonrpc": "2.0", "id": "a", "method": "ping"},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": "b", "method": "tools/list"},
+    ]))
+    responses = client.read()
+    assert [r["id"] for r in responses] == ["a", "b"]
+
+
+def test_explicit_project_argument(client, hub):
+    client.tool("note", text="서비스 포트는 8080", project="서비스", kind="fact")
+    text = client.tool("recall", query="포트 번호", project="svc")["content"][0]["text"]
+    assert "8080" in text
