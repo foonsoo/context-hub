@@ -39,14 +39,18 @@ def _item(row: Row, extra: str = "", snippet_limit: int = SNIPPET) -> str:
     kind = "할 일" if row.type == "task" else row.type
     if row.type == "task" and row.done:
         kind = "완료"
-    line = f"- [{row.status} · {kind}] {row.title}"
     body = knowledge.strip_prefix(" ".join(row.body.split()))
     title = row.title.rstrip("…")
-    if body.startswith(title):
-        body = body[len(title):].lstrip(" .:—-")
-    snippet = _snippet(body, snippet_limit) if body else ""
-    if snippet:
-        line += f" — {snippet}"
+    if row.title.endswith("…") and body.startswith(title):
+        # the title is just a cut-off copy of the body: show the body once
+        line = f"- [{row.status} · {kind}] {_snippet(body, snippet_limit + 60)}"
+    else:
+        line = f"- [{row.status} · {kind}] {row.title}"
+        if body.startswith(title):
+            body = body[len(title):].lstrip(" .:—-")
+        snippet = _snippet(body, snippet_limit) if body else ""
+        if snippet:
+            line += f" — {snippet}"
     line += f" ({row.updated}{_source_label(row)} · id:{row.id})"
     return line + extra
 

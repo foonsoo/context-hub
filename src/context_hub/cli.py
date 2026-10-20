@@ -55,7 +55,7 @@ def cmd_init(args) -> int:
     if args.import_legacy:
         return _import(hub, Path(args.import_legacy), apply=args.register, include_proposed=False)
     legacy_db = Path.home() / ".local/share/context-memory/memory.db"
-    if legacy_db.exists():
+    if legacy_db.exists() and not hub.read_state("legacy").get("imported"):
         print(f"\n기존 context-memory DB가 있습니다: {legacy_db}\n  가져오기: ctx import-legacy --apply")
     return 0
 

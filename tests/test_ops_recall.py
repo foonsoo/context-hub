@@ -169,3 +169,13 @@ def test_hand_edited_files_are_picked_up(hub, projects):
     page.path.write_text(page.path.read_text().replace("30초", "45초"))
     with Index(hub) as index:
         assert "45초" in index.get(result.page_id).body
+
+
+def test_truncated_titles_are_not_split_mid_word(hub, projects):
+    a, _ = projects
+    body = "블로그 3편을 작성했다. lexical/local-hash hybrid retrieval과 no_confident_match gate를 일반 독자용으로 설명했다."
+    page = knowledge.new_page("fact", body[:59] + "…", body, "alpha", [])
+    knowledge.save(hub, page)
+    out = recall(hub, "블로그 3편 retrieval", cwd=str(a)).text
+    line = next(l for l in out.splitlines() if page.id in l)
+    assert "] 블로그 3편을 작성했다. lexical/local-hash hybrid retrieval과" in line and " — " not in line
