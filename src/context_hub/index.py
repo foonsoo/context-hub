@@ -22,6 +22,7 @@ CREATE INDEX IF NOT EXISTS edges_src ON edges(src);
 CREATE INDEX IF NOT EXISTS edges_dst ON edges(dst);
 CREATE INDEX IF NOT EXISTS pages_project ON pages(project);
 """
+QUERY_WEIGHT_CAP = 6.0
 STATUS_WEIGHT = {"active": 1.0, "proposed": 0.65, "disputed": 0.5}
 
 
@@ -159,7 +160,9 @@ class Index:
         n = len(docs)
         df = {f: sum(1 for _, t, b in docs if f in t or f in b) for f in q}
         # normalise so scores mean "how much of the question this page covers" (~0..3)
-        ceiling = sum((0.5 if len(f) == 2 and "가" <= f[0] <= "힣" else 1.0) * math.log(1 + n) for f in q) or 1.0
+        # Capped so long prompts full of instructions are not diluted: matching ~4 key words is enough.
+        full = sum((0.5 if len(f) == 2 and "가" <= f[0] <= "힣" else 1.0) * math.log(1 + n) for f in q)
+        ceiling = min(full, QUERY_WEIGHT_CAP * math.log(1 + n)) or 1.0
         scored = []
         for row, title_f, body_f in docs:
             body_set = set(body_f)

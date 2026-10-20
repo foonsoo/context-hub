@@ -114,6 +114,16 @@ def git_info(cwd: str) -> GitInfo | None:
     return GitInfo(root=root, common_root=common_root, remote=normalize_remote(remote) if remote else None)
 
 
+def repo_info(cwd: str) -> GitInfo | None:
+    """git_info, ignoring repositories rooted at home or / (e.g. dotfiles)."""
+    if not os.path.isdir(cwd):
+        return None
+    info = git_info(cwd)
+    if info and _never_a_project(info.common_root):
+        return None
+    return info
+
+
 def _is_within(path: str, ancestor: str) -> bool:
     return path == ancestor or path.startswith(ancestor.rstrip(os.sep) + os.sep)
 
@@ -136,7 +146,7 @@ def project_for_cwd(hub: Hub, cwd: str | None, projects: dict[str, Project] | No
                 best = (len(registered), project.slug)
     if best:
         return best[1], "path"
-    info = git_info(path) if os.path.isdir(path) else None
+    info = repo_info(path)
     if info and info.remote:
         for project in projects.values():
             if info.remote in project.remotes:
@@ -259,9 +269,7 @@ def register_cwd(hub: Hub, cwd: str) -> str | None:
     path = canonical_path(cwd)
     if not os.path.isdir(path):
         return None
-    info = git_info(path)
-    if info and _never_a_project(info.common_root):
-        info = None  # e.g. a dotfiles repository at the home directory
+    info = repo_info(path)
     if info:
         base = info.remote.rsplit("/", 1)[-1] if info.remote and not info.remote.startswith("file:") else Path(info.common_root).name
         project = Project(

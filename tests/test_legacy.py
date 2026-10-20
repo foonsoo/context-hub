@@ -26,11 +26,14 @@ def legacy_db(tmp_path, isolated_env, make_repo):
     subprocess.run(["git", "clone", "-q", str(repo), str(copy)], check=True)
     subprocess.run(["git", "-C", str(copy), "remote", "set-url", "origin", "https://github.com/foonsoo/context-memory"], check=True)
     gone = tmp_path / "deleted-dir"
+    workspace_copy = tmp_path / "chatgpt" / "context-memory"
+    workspace_copy.mkdir(parents=True)
     db = tmp_path / "memory.db"
     conn = sqlite3.connect(db)
     conn.executescript(SCHEMA)
     rows = [("p1", "context-memory", str(repo)), ("p2", "context-memory-b0cc", str(copy)),
-            ("p3", "ym", str(isolated_env)), ("p4", "old-thing", str(gone)), ("p5", "workspace", "/")]
+            ("p3", "ym", str(isolated_env)), ("p4", "old-thing", str(gone)), ("p5", "workspace", "/"),
+            ("p6", "context-memory-5504612a", str(workspace_copy)), ("p7", "empty-junk", str(tmp_path))]
     for pid, slug, path in rows:
         conn.execute("INSERT INTO projects VALUES (?,?,?,?,?)", (pid, slug, slug, "", f"2026-08-0{pid[1]}"))
         conn.execute("INSERT INTO scopes VALUES (?,?,?,?,?)", ("s" + pid, pid, "ws", path, ""))
@@ -41,6 +44,7 @@ def legacy_db(tmp_path, isolated_env, make_repo):
         ("m4", "p4", "task", "proposed", "옛 할 일", "정리 필요"),
         ("m5", "p1", "fact", "superseded", "옛 사실", "버려짐"),
         ("m6", "p5", "fact", "rejected", "기각", "x"),
+        ("m7", "p6", "decision", "active", "사본에서 내린 결정", "ChatGPT 작업 폴더에서 결정"),
     ]
     for mid, pid, kind, status, title, content in memories:
         conn.execute("INSERT INTO memories (id, project_id, type, status, title, content, created_at) VALUES (?,?,?,?,?,?,?)",
@@ -56,23 +60,31 @@ def test_plan_merges_clones_and_drops_junk_projects(hub, legacy_db):
     plan = legacy.plan(hub, legacy_db)
     assert plan.mapping["p1"] == plan.mapping["p2"] == "context-memory"
     assert plan.mapping["p3"] == "global" and plan.mapping["p5"] == "global"
-    assert plan.mapping["p4"] == "old-thing"
+    assert plan.mapping["p6"] == "context-memory", "same-named plain folder merges into the repo project"
+    assert "같은 이름 폴더라 합침" in plan.describe()
+    assert set(plan.new_projects) == {"context-memory"}, "projects with nothing to import are not registered"
+    assert "가져올 기억이 없어" in plan.describe()
     assert plan.skipped == {"proposed": 1, "superseded": 1, "rejected": 1}
-    assert "context-memory" in plan.describe()
+    with_proposed = legacy.plan(hub, legacy_db, ("active", "proposed"))
+    assert set(with_proposed.new_projects) == {"context-memory", "deleted-dir"}
+    separate = legacy.plan(hub, legacy_db, merge_by_name=False)
+    assert separate.mapping["p6"] != "context-memory"
     assert hub.projects() == {}, "planning writes nothing"
 
 
 def test_apply_imports_with_evidence_and_is_idempotent(hub, legacy_db):
     plan = legacy.plan(hub, legacy_db)
-    assert legacy.apply(hub, legacy_db, plan) == 3
+    assert legacy.apply(hub, legacy_db, plan) == 4
     pages = {p.meta["legacy_id"]: p for p in knowledge.iter_pages(hub)}
-    assert set(pages) == {"m1", "m2", "m3"}
+    assert set(pages) == {"m1", "m2", "m3", "m7"}
+    assert pages["m7"].project == "context-memory"
+    assert set(hub.projects()) == {"context-memory"}
     m1 = pages["m1"]
     assert m1.status == "active" and m1.project == "context-memory" and m1.meta["reviewed_by"] == "legacy"
     assert inbox.resolve_ref(hub, m1.sources[0])["text"] == "SQLite로 결정함 (근거)"
     assert pages["m2"].type == "fact" and pages["m3"].project == "global"
     assert legacy.apply(hub, legacy_db, legacy.plan(hub, legacy_db)) == 0
-    assert len(list(knowledge.iter_pages(hub))) == 3
+    assert len(list(knowledge.iter_pages(hub))) == 4
 
 
 def test_include_proposed_creates_review_items(hub, legacy_db):
@@ -85,4 +97,18 @@ def test_cli_preview_and_apply(hub, legacy_db, run_ctx):
     out = run_ctx("import-legacy", "--db", str(legacy_db)).stdout
     assert "미리보기" in out and not list(knowledge.iter_pages(hub))
     out = run_ctx("import-legacy", "--db", str(legacy_db), "--apply").stdout
-    assert "3건을 가져왔습니다" in out
+    assert "4건을 가져왔습니다" in out
+
+
+def test_legacy_dates_and_task_snapshots(hub, legacy_db):
+    conn = sqlite3.connect(legacy_db)
+    conn.execute("INSERT INTO memories (id, project_id, type, status, title, content, created_at, updated_at) "
+                 "VALUES ('m8','p1','task','active','handoff — pushed','진행 스냅샷','2026-08-01','2026-08-05')")
+    conn.commit()
+    conn.close()
+    legacy.apply(hub, legacy_db, legacy.plan(hub, legacy_db))
+    page = next(p for p in knowledge.iter_pages(hub) if p.meta["legacy_id"] == "m8")
+    assert page.meta["updated"] == "2026-08-05" and page.done is True
+    from context_hub.recall import recall
+    out = recall(hub, "할 일", project="context-memory").text
+    assert "열린 할 일" not in out

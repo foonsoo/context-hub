@@ -44,3 +44,23 @@ def test_assignments_and_urls(text, leak):
 ])
 def test_benign_text_is_untouched(text):
     assert redact(text) == text
+
+
+@pytest.mark.parametrize("text", [
+    "yield_time_ms:1000,max_output_tokens:2000 text(r.output)",
+    "MAX_TOKENS=4096",
+    'secret=$(openssl rand -hex 32)',
+    "TOKEN_ENABLED=true",
+    "API_KEY=$API_KEY",
+])
+def test_counts_and_references_are_not_secrets(text):
+    assert redact(text) == text
+
+
+@pytest.mark.parametrize("text,leak", [
+    ("sh -lc 'PGPASSWORD=Xk82!mq psql -U app'", "Xk82!mq"),
+    ('-H "X-Atlassian-Token: ATATT3xFfGF0abc"', "ATATT3xFfGF0abc"),
+    ("kubectl create secret --from-literal=OPEN_API_KEY=abc123def456", "abc123def456"),
+])
+def test_real_world_leaks_from_transcripts(text, leak):
+    assert leak not in redact(text)

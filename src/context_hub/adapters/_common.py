@@ -9,12 +9,21 @@ _REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 _INJECTED_PREFIXES = (
     "<command-", "<local-command", "caveat:", "<environment_context>", "<user_instructions>",
     "<permissions instructions>", "# agents.md instructions", "<turn_aborted>", "[request interrupted",
+    "the following is the codex agent history", "call these context_memory",
 )
+_WHOLE_TAG_BLOCK = re.compile(r"^<([a-z][a-z0-9_-]*)[^>]*>.*</\1>$", re.S)
+_ATTACHMENT_REQUEST = re.compile(r"^## My request(?: for \w+)?:\s*$", re.M)
+_IMAGE_TAG = re.compile(r"<image\b[^>]*>(?:\s*</image>)?")
 
 
 def clean_user_text(text: str) -> str:
+    """Drop client-injected text; keep only what the person actually asked."""
     text = _REMINDER.sub("", text or "").strip()
-    if text.casefold().startswith(_INJECTED_PREFIXES):
+    if text.startswith("# Files mentioned by the user"):
+        match = _ATTACHMENT_REQUEST.search(text)
+        text = text[match.end():].strip() if match else ""
+    text = _IMAGE_TAG.sub("", text).strip()
+    if text.casefold().startswith(_INJECTED_PREFIXES) or _WHOLE_TAG_BLOCK.match(text):
         return ""
     return text
 

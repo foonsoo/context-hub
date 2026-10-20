@@ -19,7 +19,7 @@ from .recall import recall
 
 START_BUDGET = 600
 PROMPT_BUDGET = 1200
-PROMPT_MIN_SCORE = 0.3
+PROMPT_MIN_SCORE = 0.5
 
 
 def _emit(event: str, text: str) -> None:
@@ -73,6 +73,8 @@ def _flush(hub: Hub, payload: dict) -> None:
 
 
 def run(action: str, hub: Hub | None = None, stdin=None) -> int:
+    if os.environ.get("CTX_HOOK_DISABLE"):
+        return 0  # set for the curator's own Claude sessions
     hub = hub or Hub()
     try:
         raw = (stdin or sys.stdin).read()

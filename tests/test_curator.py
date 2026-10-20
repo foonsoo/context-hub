@@ -191,3 +191,72 @@ def test_without_extractor_nothing_breaks(hub, svc):
     session(hub, svc, [("user", LONG)])
     report = curator.curate(hub, None)
     assert report.skipped and len(curator.pending(hub, quiet_seconds=0)) == 1
+
+
+def test_claude_cli_extractor_contract(hub, svc, tmp_path, monkeypatch):
+    """A fake `claude` binary checks the flags that keep curation isolated and cheap."""
+    import stat
+    log = tmp_path / "argv.json"
+    fake = tmp_path / "bin" / "claude"
+    fake.parent.mkdir()
+    fake.write_text(f"""#!{__import__('sys').executable}
+import json, os, sys
+argv = sys.argv[1:]
+prompt = sys.stdin.read()
+json.dump({{"argv": argv, "hook_disabled": os.environ.get("CTX_HOOK_DISABLE"), "has_lines": "L1 user:" in prompt}}, open({str(log)!r}, "w"))
+out = {{"operations": [], "now": {{"has_update": True, "goal": "", "in_progress": [], "next": ["CLI로 정리됨"], "blockers": [], "done": []}}}}
+print(json.dumps({{"is_error": False, "result": json.dumps(out), "structured_output": out}}))
+""")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{fake.parent}:{os.environ['PATH']}")
+    monkeypatch.setenv("CTX_CURATOR", "claude")
+    session(hub, svc, [("user", LONG)])
+    extractor = curator.default_extractor()
+    assert isinstance(extractor, curator.ClaudeCliExtractor)
+    report = curator.curate(hub, extractor, quiet_seconds=0)
+    assert report.now_updates == 1 and not report.errors
+    seen = json.loads(log.read_text())
+    assert seen["hook_disabled"] == "1" and seen["has_lines"]
+    for flag in ("--json-schema", "--no-session-persistence", "--strict-mcp-config", "--setting-sources"):
+        assert flag in seen["argv"]
+    assert seen["argv"][seen["argv"].index("--tools") + 1] == ""
+    assert knowledge.load_now(hub, "svc").sections["다음"] == ["CLI로 정리됨"]
+
+
+def test_default_extractor_modes(monkeypatch):
+    monkeypatch.setenv("CTX_CURATOR", "off")
+    assert curator.default_extractor() is None
+    monkeypatch.setenv("CTX_CURATOR", "claude")
+    monkeypatch.setenv("PATH", "/nonexistent")
+    assert curator.default_extractor() is None
+
+
+def test_scratch_folder_session_goes_to_the_project_the_user_names(hub, svc, tmp_path):
+    scratch = tmp_path / "notes-folder"
+    scratch.mkdir()
+    hub.update_project("svc", aliases=["결제 서비스"])
+    turns = [("user", "결제 서비스 리뷰해줘 " + LONG), ("assistant", "네"), ("user", "결제 서비스 테스트도 봐줘"),
+             ("user", "svc 배포는 다음 주")]
+    records = [{"role": r, "text": t, "cwd": str(scratch), "project": None} for r, t in turns]
+    inbox.append(hub, inbox.day_dir(hub) / "claude-code-n.jsonl", records)
+    fake = FakeExtractor(lambda p: {"operations": [], "now": NO_NOW})
+    assert curator.curate(hub, fake, quiet_seconds=0).sessions == 1
+    assert "PROJECT: Service (svc)" in fake.prompts[0]
+    assert "notes-folder" not in hub.projects()
+
+
+def test_unassigned_sessions_are_retried_after_registry_changes(hub, svc, tmp_path):
+    scratch = tmp_path / "loose"
+    scratch.mkdir()
+    records = [{"role": "user", "text": "주문 시스템 " + LONG, "cwd": str(scratch), "project": None},
+               {"role": "user", "text": "주문 시스템 테스트", "cwd": str(scratch), "project": None}]
+    inbox.append(hub, inbox.day_dir(hub) / "claude-code-u.jsonl", records)
+    fake = FakeExtractor(lambda p: {"operations": [], "now": NO_NOW})
+    report = curator.curate(hub, fake, quiet_seconds=0)
+    assert report.sessions == 0 and "보류" in report.skipped[0]
+    assert curator.pending(hub, quiet_seconds=0) == []
+    time.sleep(0.05)
+    hub.update_project("svc", aliases=["주문 시스템"])
+    assert len(curator.pending(hub, quiet_seconds=0)) == 1
+    assert curator.curate(hub, fake, quiet_seconds=0).sessions == 1
+    assert curator.pending(hub, quiet_seconds=0) == []

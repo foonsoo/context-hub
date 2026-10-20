@@ -35,11 +35,17 @@ def _source_label(row: Row) -> str:
     return f" · 출처: {first}{more}"
 
 
-def _item(row: Row, extra: str = "") -> str:
+def _item(row: Row, extra: str = "", snippet_limit: int = SNIPPET) -> str:
     kind = "할 일" if row.type == "task" else row.type
+    if row.type == "task" and row.done:
+        kind = "완료"
     line = f"- [{row.status} · {kind}] {row.title}"
-    snippet = _snippet(row.body)
-    if snippet and snippet != row.title:
+    body = " ".join(row.body.split())
+    title = row.title.rstrip("…")
+    if body.startswith(title):
+        body = body[len(title):].lstrip(" .:—-")
+    snippet = _snippet(body, snippet_limit) if body else ""
+    if snippet:
         line += f" — {snippet}"
     line += f" ({row.updated}{_source_label(row)} · id:{row.id})"
     return line + extra
@@ -137,7 +143,7 @@ def recall(hub: Hub, query: str, cwd: str | None = None, project: str | None = N
             if tasks:
                 add(f"## 열린 할 일 ({len(tasks)})")
                 for row in tasks[:12]:
-                    if add(_item(row)):
+                    if add(_item(row, snippet_limit=120)):
                         ids.append(row.id)
         if has_any(query, STATUS_WORDS) and res.slugs and not res.all_projects:
             recent = [r for r in index.pages([s for s in scope if s != "global"], ("active", "proposed", "disputed"))
@@ -145,7 +151,7 @@ def recall(hub: Hub, query: str, cwd: str | None = None, project: str | None = N
             if recent:
                 add("## 최근 기록")
                 for row in recent:
-                    if add(_item(row)):
+                    if add(_item(row, snippet_limit=160)):
                         ids.append(row.id)
         if hits:
             best = hits[0][0]

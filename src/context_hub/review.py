@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,7 +32,7 @@ def add(hub: Hub, kind: str, *, page_id: str | None = None, target_id: str | Non
     assert kind in KINDS, kind
     hub.review_dir.mkdir(parents=True, exist_ok=True)
     data = {
-        "id": new_id("rev"), "kind": kind, "created": now().isoformat(),
+        "id": new_id("rev"), "kind": kind, "created": now().isoformat(), "seq": time.time_ns(),
         "project": project, "page_id": page_id, "target_id": target_id,
         "summary": summary, "content": content, "sources": sources or [],
         **(extra or {}),
@@ -53,7 +54,7 @@ def pending(hub: Hub, project: str | None = None) -> list[Item]:
         if project and data.get("project") != project:
             continue
         items.append(Item(data))
-    items.sort(key=lambda i: i.data.get("created", ""))
+    items.sort(key=lambda i: (i.data.get("created", ""), i.data.get("seq", 0)))
     return items
 
 

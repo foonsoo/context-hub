@@ -13,7 +13,8 @@ _PARTICLES = sorted(
 )
 STOPWORDS = set(
     "알려줘 알려 줘 해줘 해주세요 주세요 좀 그리고 지금 뭐 뭐야 어떻게 무엇 무슨 어디 있어 있나 하는 할 "
-    "그 이 저 것 거 수 등 및 더 the a an of to and or for in on at is are be was what how why "
+    "그 이 저 것 거 수 등 및 더 프로젝트 도구 맥락 답해 답변 사용해 사용 말고 이미 주어진 확인해 확인 해서 하고 "
+    "the a an of to and or for in on at is are be was what how why "
     "please me my show tell about with this that it".split()
 )
 TASK_WORDS = ("할 일", "할일", "todo", "to-do", "task", "남은", "다음 작업", "다음에", "해야")

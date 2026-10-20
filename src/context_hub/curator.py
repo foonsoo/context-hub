@@ -16,7 +16,7 @@ from typing import Any, Protocol
 
 from . import inbox, knowledge, review
 from .hub import Hub, today
-from .identity import git_info, register_cwd
+from .identity import mentioned_projects, register_cwd, repo_info
 from .index import Index, Row
 from .secrets import redact
 from .text import jaccard
@@ -148,11 +148,48 @@ class AnthropicExtractor:
         return json.loads(text)
 
 
+class ClaudeCliExtractor:
+    """Uses the installed Claude Code CLI (subscription login, no API key needed).
+
+    Opt-in with ``CTX_CURATOR=claude`` because it spends the user's plan usage.
+    Runs without tools, settings, MCP servers or session persistence, and with
+    ``CTX_HOOK_DISABLE`` so our own hooks cannot recurse into another curation.
+    """
+
+    def __init__(self, command: str | None = None, model: str | None = None):
+        import shutil
+
+        self.command = command or os.environ.get("CTX_CURATOR_COMMAND") or "claude"
+        if not shutil.which(self.command.split()[0]):
+            raise RuntimeError(f"{self.command} not found")
+        self.model = model or os.environ.get("CTX_CURATOR_MODEL")
+
+    def extract(self, prompt: str) -> dict[str, Any]:
+        import subprocess
+
+        argv = [*self.command.split(), "-p", "--output-format", "json",
+                "--json-schema", json.dumps(OPERATION_SCHEMA), "--tools", "", "--strict-mcp-config",
+                "--no-session-persistence", "--setting-sources", "", "--system-prompt", SYSTEM_PROMPT]
+        if self.model:
+            argv += ["--model", self.model]
+        result = subprocess.run(argv, input=prompt, capture_output=True, text=True, timeout=600,
+                                env={**os.environ, "CTX_HOOK_DISABLE": "1"}, cwd=os.path.expanduser("~"))
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout).strip()[:300] or f"exit {result.returncode}")
+        data = json.loads(result.stdout)
+        if data.get("is_error"):
+            raise RuntimeError(str(data.get("result"))[:300])
+        output = data.get("structured_output")
+        return output if isinstance(output, dict) else json.loads(data.get("result") or "{}")
+
+
 def default_extractor() -> Extractor | None:
-    if os.environ.get("CTX_CURATOR", "").casefold() in ("off", "0", "false", "none"):
+    """CTX_CURATOR: off | claude (Claude Code CLI) | api (default: Anthropic API if configured)."""
+    mode = os.environ.get("CTX_CURATOR", "").casefold()
+    if mode in ("off", "0", "false", "none"):
         return None
     try:
-        return AnthropicExtractor()
+        return ClaudeCliExtractor() if mode in ("claude", "claude-cli") else AnthropicExtractor()
     except Exception:
         return None
 
@@ -164,11 +201,20 @@ def _transcript_files(hub: Hub) -> list[Path]:
 
 
 def pending(hub: Hub, quiet_seconds: float = QUIET_SECONDS) -> list[tuple[Path, int]]:
-    state = hub.read_state("curator").get("files", {})
+    data = hub.read_state("curator")
+    state = data.get("files", {})
+    unassigned = data.get("unassigned", {})
+    try:
+        registry_changed = hub.registry_path.stat().st_mtime
+    except OSError:
+        registry_changed = 0
     result = []
     for path in _transcript_files(hub):
         rel = path.relative_to(hub.root).as_posix()
         done = int(state.get(rel, 0))
+        skipped = unassigned.get(rel)
+        if skipped and registry_changed > skipped["at"]:
+            done = min(done, int(skipped["from"]))  # projects changed: maybe it has a home now
         with open(path, "rb") as handle:
             total = sum(1 for _ in handle)
         if total <= done:
@@ -179,9 +225,16 @@ def pending(hub: Hub, quiet_seconds: float = QUIET_SECONDS) -> list[tuple[Path, 
     return result
 
 
-def _mark(hub: Hub, path: Path, lines: int) -> None:
+def _mark(hub: Hub, path: Path, lines: int, unassigned_from: int | None = None) -> None:
     state = hub.read_state("curator")
-    state.setdefault("files", {})[path.relative_to(hub.root).as_posix()] = lines
+    rel = path.relative_to(hub.root).as_posix()
+    state.setdefault("files", {})[rel] = lines
+    skipped = state.setdefault("unassigned", {})
+    if unassigned_from is not None:
+        start = min(unassigned_from, int(skipped.get(rel, {}).get("from", unassigned_from)))
+        skipped[rel] = {"from": start, "at": time.time()}
+    else:
+        skipped.pop(rel, None)
     hub.write_state("curator", state)
 
 
@@ -227,9 +280,24 @@ def build_prompt(project: str, project_name: str, entries: list[inbox.Entry],
     if not existing:
         lines.append("- (none)")
     lines += ["", "CURRENT NOW.md:", now_text.strip() or "(empty)", "", "TRANSCRIPT:"]
+    tools: list[inbox.Entry] = []
+
+    def flush_tools() -> None:
+        if not tools:
+            return
+        calls = "; ".join(" ".join((t["text"] or "").split()).removeprefix("tool ")[:120] for t in tools[:8])
+        more = f"; … +{len(tools) - 8}" if len(tools) > 8 else ""
+        lines.append(f"L{_line_no(tools[0])} tools: {calls}{more}")
+        tools.clear()
+
     for entry in entries:
+        if entry["role"] == "tool":
+            tools.append(entry)
+            continue
+        flush_tools()
         text = " ".join((entry["text"] or "").split())
         lines.append(f"L{_line_no(entry)} {entry['role']}: {text}")
+    flush_tools()
     return "\n".join(lines)
 
 
@@ -327,9 +395,25 @@ def _session_project(hub: Hub, entries: list[inbox.Entry]) -> str | None:
     if project:
         return project
     cwd = next((e["cwd"] for e in entries if e["cwd"]), None)
-    if cwd and os.path.isdir(cwd) and git_info(cwd):
+    if cwd and repo_info(cwd):
         return register_cwd(hub, cwd)  # only git repositories become projects automatically
-    return None
+    return _dominant_mention(hub, entries)
+
+
+def _dominant_mention(hub: Hub, entries: list[inbox.Entry]) -> str | None:
+    """A session in a scratch folder still belongs to the project the user keeps naming."""
+    counts: dict[str, int] = {}
+    projects = hub.projects()
+    for entry in entries:
+        if entry["role"] != "user":
+            continue
+        slugs, _ = mentioned_projects(entry["text"] or "", projects)
+        for slug in slugs:
+            counts[slug] = counts.get(slug, 0) + 1
+    if not counts:
+        return None
+    slug, top = max(counts.items(), key=lambda item: item[1])
+    return slug if top >= 2 and top * 2 > sum(counts.values()) else None
 
 
 def curate(hub: Hub, extractor: Extractor | None = None, quiet_seconds: float = QUIET_SECONDS,
@@ -350,8 +434,12 @@ def curate(hub: Hub, extractor: Extractor | None = None, quiet_seconds: float = 
             useful = [e for e in entries if e["role"] in ("user", "assistant", "tool")]
             user_text = sum(len(e["text"] or "") for e in useful if e["role"] in ("user", "assistant"))
             project = _session_project(hub, useful)
-            if not useful or user_text < MIN_SESSION_CHARS or not project:
+            if not useful or user_text < MIN_SESSION_CHARS:
                 _mark(hub, path, total)
+                continue
+            if not project:
+                _mark(hub, path, total, unassigned_from=done)
+                report.skipped.append(f"{path.name}: 프로젝트를 정하지 못해 보류 (프로젝트를 등록하거나 별칭을 붙이면 다시 정리합니다)")
                 continue
             if project in projects and not projects[project].capture:
                 _mark(hub, path, total)

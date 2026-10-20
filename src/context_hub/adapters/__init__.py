@@ -15,7 +15,7 @@ from typing import Callable, Iterable, Iterator
 
 from .. import inbox
 from ..hub import Hub
-from ..identity import git_info, register_cwd, resolve
+from ..identity import register_cwd, repo_info, resolve
 
 MAX_EVENT_TEXT = 4000
 
@@ -99,7 +99,7 @@ def _project_for(hub: Hub, cwd: str | None, info: dict) -> str | None | bool:
         return None
     res = resolve(hub, cwd=cwd, for_write=True)
     slug = res.slug
-    if not slug and os.path.isdir(cwd) and git_info(cwd):
+    if not slug and repo_info(cwd):
         # Auto-register git repositories only; scratch folders stay unassigned.
         slug = register_cwd(hub, cwd)
     if slug:

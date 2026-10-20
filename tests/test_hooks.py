@@ -71,3 +71,19 @@ def test_hooks_never_fail(hub, payload, capsys):
 def test_hooks_without_hub_do_nothing(tmp_path, capsys):
     assert hooks.run("start", Hub(tmp_path / "missing"), io.StringIO("{}")) == 0
     assert capsys.readouterr().out == ""
+
+
+def test_prompt_with_long_instructions_still_finds_the_fact(hub, svc, capsys):
+    ops.note(hub, "결정: 웹훅은 최대 5회 지수 백오프로 재시도", cwd=str(svc))
+    for i in range(20):
+        ops.note(hub, f"README 섹션 {i} 정리 메모", cwd=str(svc), kind="fact")
+    prompt = "도구를 쓰지 말고, 이미 주어진 맥락만으로 답해: 이 프로젝트의 막힌 일과 웹훅 재시도 횟수는?"
+    out = run(hub, "prompt", {"cwd": str(svc), "prompt": prompt}, capsys)
+    assert out and "5회 지수 백오프" in out["hookSpecificOutput"]["additionalContext"]
+    assert run(hub, "prompt", {"cwd": str(svc), "prompt": "이 함수 리팩터링하고 테스트도 추가해줘"}, capsys) is None
+
+
+def test_hook_disable_env_prevents_recursion(hub, svc, capsys, monkeypatch):
+    ops.handoff(hub, cwd=str(svc), next_steps=["x"])
+    monkeypatch.setenv("CTX_HOOK_DISABLE", "1")
+    assert run(hub, "start", {"cwd": str(svc)}, capsys) is None

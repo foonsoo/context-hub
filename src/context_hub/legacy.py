@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import inbox, knowledge, review
 from .hub import Hub, Project, slugify
-from .identity import _never_a_project, canonical_path, git_info, project_for_cwd
+from .identity import _never_a_project, canonical_path, project_for_cwd, repo_info
 
 DEFAULT_STATUSES = ("active",)
 
@@ -24,12 +24,16 @@ class Plan:
     counts: Counter = field(default_factory=Counter)
     skipped: Counter = field(default_factory=Counter)
     statuses: tuple[str, ...] = DEFAULT_STATUSES
+    notes: dict[str, str] = field(default_factory=dict)
+    extra_paths: dict[str, list[str]] = field(default_factory=dict)  # merged folders per slug
+    renamed: dict[str, str] = field(default_factory=dict)
 
     def describe(self) -> str:
         lines = ["기존 프로젝트 → 새 프로젝트"]
-        for legacy_id, target in sorted(self.mapping.items(), key=lambda kv: self.labels[kv[0]]):
-            marker = " (새로 등록)" if target in self.new_projects else ""
-            lines.append(f"  {self.labels[legacy_id]:<40} → {target}{marker}  [{self.counts[legacy_id]}건]")
+        for legacy_id, target in sorted(self.mapping.items(), key=lambda kv: (kv[1], self.labels[kv[0]])):
+            note = self.notes.get(legacy_id) or ("새로 등록" if target in self.new_projects else "")
+            note = f" ({note})" if note else ""
+            lines.append(f"  {self.labels[legacy_id]:<40} → {target:<24} [{self.counts[legacy_id]}건]{note}")
         if self.skipped:
             lines.append("가져오지 않음: " + ", ".join(f"{k} {v}건" for k, v in sorted(self.skipped.items())))
         return "\n".join(lines)
@@ -41,46 +45,82 @@ def _connect(db: Path) -> sqlite3.Connection:
     return conn
 
 
-def plan(hub: Hub, db: Path, statuses: tuple[str, ...] = DEFAULT_STATUSES) -> Plan:
+def _same_name(path: str, project: Project) -> bool:
+    name = Path(path).name.casefold()
+    labels = {project.slug.casefold(), project.name.casefold()}
+    labels |= {Path(p).name.casefold() for p in project.paths}
+    labels |= {r.rsplit("/", 1)[-1] for r in project.remotes}
+    return name in labels
+
+
+def plan(hub: Hub, db: Path, statuses: tuple[str, ...] = DEFAULT_STATUSES,
+         merge_by_name: bool = True) -> Plan:
+    """Map legacy projects onto hub projects without writing anything.
+
+    Git repositories are matched by remote first so they set the canonical
+    names; plain folders with the same name (copies made by ChatGPT/Codex
+    workspaces) are then merged into them. Projects without anything to
+    import are not registered.
+    """
     result = Plan(statuses=statuses)
     projects = hub.projects()
     with _connect(db) as conn:
-        paths: dict[str, list[str]] = {}
-        for row in conn.execute("SELECT project_id, path FROM scopes WHERE path IS NOT NULL"):
-            paths.setdefault(row["project_id"], []).append(row["path"])
-        for row in conn.execute("SELECT id, slug, name FROM projects ORDER BY created_at"):
-            result.labels[row["id"]] = row["slug"]
-            target = None
-            for path in paths.get(row["id"], []):
-                path = canonical_path(path)
-                if _never_a_project(path):
-                    target = "global"
-                    break
-                slug, _ = project_for_cwd(hub, path, {**projects, **result.new_projects})
-                if slug:
-                    target = slug
-                    break
-                info = git_info(path) if os.path.isdir(path) else None
-                if info and info.remote:
-                    match = next((p.slug for p in result.new_projects.values() if info.remote in p.remotes), None)
-                    if match:
-                        target = match
-                        break
-                    base = info.remote.rsplit("/", 1)[-1]
-                    project = Project(slug=_unique(slugify(base), projects, result), name=base,
-                                      remotes=[info.remote], paths=[info.common_root])
-                else:
-                    project = Project(slug=_unique(slugify(row["slug"]), projects, result),
-                                      name=row["name"] or row["slug"], paths=[path])
-                result.new_projects[project.slug] = project
-                target = project.slug
-                break
-            result.mapping[row["id"]] = target or "global"
         for row in conn.execute("SELECT project_id, status, count(*) n FROM memories GROUP BY project_id, status"):
             if row["status"] in result.statuses:
                 result.counts[row["project_id"]] += row["n"]
             else:
                 result.skipped[row["status"]] += row["n"]
+        paths: dict[str, list[str]] = {}
+        for row in conn.execute("SELECT project_id, path FROM scopes WHERE path IS NOT NULL"):
+            paths.setdefault(row["project_id"], []).append(canonical_path(row["path"]))
+        rows = list(conn.execute("SELECT id, slug, name FROM projects ORDER BY created_at"))
+    infos = {p: repo_info(p) for ps in paths.values() for p in ps}
+    rows.sort(key=lambda r: not any(infos.get(p) for p in paths.get(r["id"], [])))
+    for row in rows:
+        result.labels[row["id"]] = row["slug"]
+        target = None
+        for path in paths.get(row["id"], []):
+            if _never_a_project(path):
+                target = "global"
+                break
+            known = {**projects, **result.new_projects}
+            slug, _ = project_for_cwd(hub, path, known)
+            if slug:
+                target = slug
+                break
+            info = infos.get(path)
+            if info and info.remote:
+                match = next((p.slug for p in known.values() if info.remote in p.remotes), None)
+                if match:
+                    target = match
+                    break
+                base = info.remote.rsplit("/", 1)[-1]
+                project = Project(slug=_unique(slugify(base), projects, result), name=base,
+                                  remotes=[info.remote], paths=[info.common_root])
+            else:
+                if merge_by_name:
+                    match = next((p.slug for p in known.values() if _same_name(path, p)), None)
+                    if match:
+                        target = match
+                        result.notes[row["id"]] = "같은 이름 폴더라 합침"
+                        if os.path.isdir(path):
+                            result.extra_paths.setdefault(match, []).append(path)
+                        break
+                project = Project(slug=_unique(slugify(Path(path).name or row["slug"]), projects, result),
+                                  name=Path(path).name or row["name"] or row["slug"],
+                                  paths=[info.common_root if info else path])
+            result.new_projects[project.slug] = project
+            target = project.slug
+            break
+        result.mapping[row["id"]] = target or "global"
+    used = Counter()
+    for legacy_id, target in result.mapping.items():
+        used[target] += result.counts[legacy_id]
+    for slug in [s for s in result.new_projects if not used[s]]:
+        del result.new_projects[slug]
+        for legacy_id, target in result.mapping.items():
+            if target == slug:
+                result.notes[legacy_id] = "가져올 기억이 없어 등록하지 않음"
     return result
 
 
@@ -95,11 +135,20 @@ def _unique(slug: str, projects: dict, result: Plan) -> str:
 def apply(hub: Hub, db: Path, the_plan: Plan) -> int:
     hub.ensure()
     for project in the_plan.new_projects.values():
+        original = project.slug
         created = hub.add_project(project)
-        if created.slug != project.slug:
+        if created.slug != original:
+            the_plan.renamed[original] = created.slug
             for key, value in the_plan.mapping.items():
-                if value == project.slug:
+                if value == original:
                     the_plan.mapping[key] = created.slug
+    registered = hub.projects()
+    for slug, paths in the_plan.extra_paths.items():
+        slug = the_plan.renamed.get(slug, slug)
+        if slug in registered:
+            merged = registered[slug].paths + [p for p in paths if p not in registered[slug].paths]
+            if merged != registered[slug].paths:
+                hub.update_project(slug, paths=merged)
     imported_marker = hub.read_state("legacy").get("imported", [])
     imported = 0
     log_file = hub.inbox / "legacy" / "context-memory.jsonl"
@@ -129,10 +178,14 @@ def apply(hub: Hub, db: Path, the_plan: Plan) -> int:
         page = knowledge.new_page(kind, row["title"] or knowledge.title_from(row["content"]),
                                   row["content"] or "", project, refs, status=row["status"])
         page.meta["created"] = (row["created_at"] or "")[:10] or page.meta["created"]
+        page.meta["updated"] = (row["updated_at"] or row["created_at"] or "")[:10] or page.meta["updated"]
         page.meta["legacy_id"] = row["id"]
+        if kind == "task" and row["status"] == "active":
+            # context-memory used "task" for progress snapshots; keep them searchable, not open
+            page.meta["done"] = True
         if row["status"] == "active":
             page.meta["reviewed_by"] = "legacy"
-        knowledge.save(hub, page)
+        knowledge.save(hub, page, touch=False)
         if row["status"] == "proposed":
             review.add(hub, "new", page_id=page.id, project=project, summary=f"[{kind}] {page.title} (가져옴)")
         imported_marker.append(row["id"])

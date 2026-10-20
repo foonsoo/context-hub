@@ -153,3 +153,28 @@ def test_discover_respects_env(monkeypatch, tmp_path):
     assert [p.name for p in claude_code.discover()] == ["s.jsonl"]
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "nothing"))
     assert codex.discover() == []
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("<recommended_plugins>\nHere are plugins\n</recommended_plugins>", ""),
+    ("The following is the Codex agent history whose request action you are assessing.", ""),
+    ("Call these context_memory tools first", ""),
+    ("# Files mentioned by the user:\n\n## a.pdf: /tmp/a.pdf\n\n## My request for Codex:\n\n월별 명세서 정리해줘\n<image name=[Image #1] path=\"/tmp/x\">", "월별 명세서 정리해줘"),
+    ("# Files mentioned by the user:\n\n## a.png: /tmp/a.png\n\n## My request:\n<image name=[Image #1] path=\"/tmp/x\"></image>", ""),
+    ("<b>굵게</b> 이건 실제 질문", "<b>굵게</b> 이건 실제 질문"),
+])
+def test_injected_user_text_is_cleaned(raw, expected):
+    from context_hub.adapters._common import clean_user_text
+    assert clean_user_text(raw) == expected
+
+
+def test_curator_prompt_collapses_tool_runs(hub):
+    from context_hub import curator
+    file = inbox.day_dir(hub) / "codex-t.jsonl"
+    inbox.append(hub, file, [{"role": "user", "text": "테스트 돌려줘"}] +
+                 [{"role": "tool", "text": f"tool shell: step {i}"} for i in range(12)] +
+                 [{"role": "assistant", "text": "끝"}])
+    entries = list(inbox.read_lines(hub, file))
+    prompt = curator.build_prompt("p", "P", entries, [], "")
+    assert "L2 tools: shell: step 0; shell: step 1" in prompt and "… +4" in prompt
+    assert "L14 assistant: 끝" in prompt

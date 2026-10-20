@@ -136,8 +136,9 @@ def page_path(hub: Hub, page: Page) -> Path:
     return folder / f"{slugify(page.title, 40)}-{page.id}.md"
 
 
-def save(hub: Hub, page: Page, by_curator: bool = True) -> Page:
-    page.meta["updated"] = today()
+def save(hub: Hub, page: Page, by_curator: bool = True, touch: bool = True) -> Page:
+    if touch or not page.meta.get("updated"):
+        page.meta["updated"] = today()
     if by_curator:
         page.meta["curator_hash"] = body_hash(page.body)
     target = page.path or page_path(hub, page)

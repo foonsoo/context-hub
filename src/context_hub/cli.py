@@ -133,8 +133,9 @@ def cmd_projects(args) -> int:
         path = canonical_path(args.slug or os.getcwd())
         info = git_info(path)
         name = " ".join(args.values) if args.values else Path(path).name
+        folder = Path(info.common_root if info else path).name
         project = hub.add_project(Project(
-            slug=slugify(name), name=name,
+            slug=slugify(folder), name=name,
             remotes=[info.remote] if info and info.remote else [],
             paths=[info.common_root if info else path],
         ))
@@ -235,7 +236,12 @@ def cmd_status(args) -> int:
     for row in rows:
         by_status[row.status] = by_status.get(row.status, 0) + 1
     usage = hub.read_state("curator").get("usage", {})
-    extractor = "사용 가능" if curator.default_extractor() else "꺼짐 (pip install 'context-hub[llm]' + ANTHROPIC_API_KEY)"
+    found = curator.default_extractor()
+    if found:
+        extractor = "Claude Code CLI" if isinstance(found, curator.ClaudeCliExtractor) else "Anthropic API"
+    else:
+        extractor = ("꺼짐 (API: pip install 'context-hub[llm]' + ANTHROPIC_API_KEY, "
+                     "또는 Claude Code 구독으로: CTX_CURATOR=claude)")
     here, how = project_for_cwd(hub, os.getcwd(), projects)
     print(f"허브: {hub.root}")
     print(f"현재 폴더 프로젝트: {here or '없음'}" + (f" ({how})" if here else ""))
@@ -261,6 +267,9 @@ def cmd_forget(args) -> int:
     if not page:
         print(f"지식을 찾지 못했습니다: {args.id}")
         return 1
+    if page.status == "archived":
+        print(f"이미 보관된 지식입니다: {page.title}")
+        return 0
     page.meta["status"] = "archived"
     knowledge.save(hub, page, by_curator=not page.human_edited())
     review.forget_in_now(hub, page)
@@ -313,15 +322,16 @@ def cmd_sync(args) -> int:
 def cmd_import(args) -> int:
     hub = _hub(args)
     hub.ensure()
-    return _import(hub, Path(args.db).expanduser(), apply=args.apply, include_proposed=args.include_proposed)
+    return _import(hub, Path(args.db).expanduser(), apply=args.apply, include_proposed=args.include_proposed,
+                   merge_by_name=not args.no_merge_by_name)
 
 
-def _import(hub: Hub, db: Path, apply: bool, include_proposed: bool) -> int:
+def _import(hub: Hub, db: Path, apply: bool, include_proposed: bool, merge_by_name: bool = True) -> int:
     if not db.exists():
         print(f"DB가 없습니다: {db}")
         return 1
     statuses = ("active", "proposed") if include_proposed else ("active",)
-    the_plan = legacy.plan(hub, db, statuses)
+    the_plan = legacy.plan(hub, db, statuses, merge_by_name=merge_by_name)
     print(the_plan.describe())
     if not apply:
         print("\n미리보기입니다. 적용하려면 --apply를 붙이세요." + ("" if include_proposed else " (proposed까지: --include-proposed)"))
@@ -470,6 +480,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", default=str(Path.home() / ".local/share/context-memory/memory.db"))
     p.add_argument("--apply", action="store_true")
     p.add_argument("--include-proposed", action="store_true")
+    p.add_argument("--no-merge-by-name", action="store_true", help="같은 이름의 git 아닌 폴더를 합치지 않음")
     p.set_defaults(func=cmd_import)
 
     p = sub.add_parser("hook", help="클라이언트 훅 진입점")

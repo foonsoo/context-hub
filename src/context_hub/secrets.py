@@ -21,8 +21,10 @@ _PATTERNS = [
     re.compile(r"(?i)\b(authorization\s*:\s*(?:bearer|basic|token)\s+)[A-Za-z0-9._~+/=\-]{8,}"),
     re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=\-]{20,}"),
     re.compile(
-        r"(?i)\b([A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY|CLIENT_SECRET)[A-Z0-9_]*\s*[=:]\s*)"
-        r"(?![\s\"']*(?:\$\{|\[REDACTED|<|\*{3}))[\"']?[^\s\"']{6,}[\"']?"
+        r"(?i)\b([A-Z0-9_\-]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY|CLIENT_SECRET)"
+        r"(?!S\b|S_)[A-Z0-9_]*\s*[=:]\s*)"  # *_TOKENS / max_output_tokens are counts, not secrets
+        r"(?![\s\"']*(?:\$|\[REDACTED|<|\*{3}|\d+\b|true\b|false\b|null\b|none\b))"
+        r"[\"']?[^\s\"']{6,}[\"']?"
     ),
     re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]{3,}(@)"),
 ]
