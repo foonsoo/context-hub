@@ -286,7 +286,7 @@ def cmd_curate(args) -> int:
     quiet = 0 if args.now else curator.QUIET_SECONDS
     if not args.no_ingest:
         adapters.ingest(hub, quiet_seconds=0)
-    extractor = curator.default_extractor()
+    extractor = curator.default_extractor(hub)
     report = curator.curate(hub, extractor, quiet_seconds=quiet)
     if not args.quiet:
         print(report.summary())
@@ -314,7 +314,7 @@ def cmd_status(args) -> int:
     for row in rows:
         by_status[row.status] = by_status.get(row.status, 0) + 1
     usage = hub.read_state("curator").get("usage", {})
-    found = curator.default_extractor()
+    found = curator.default_extractor(hub)
     if found:
         extractor = "Claude Code CLI" if isinstance(found, curator.ClaudeCliExtractor) else "Anthropic API"
     else:
@@ -422,6 +422,48 @@ def _import(hub: Hub, db: Path, apply: bool, include_proposed: bool, merge_by_na
     return 0
 
 
+CONFIG_KEYS = {
+    "curator": ("curator", "mode", ("off", "claude", "api")),
+    "daily-calls": ("curator", "daily_calls", None),
+    "model": ("curator", "model", None),
+}
+
+
+def cmd_config(args) -> int:
+    import shutil
+
+    hub = _require(_hub(args))
+    if not args.key:
+        print(f"설정 파일: {hub.config_path}")
+        mode = hub.setting("curator", "mode", "CTX_CURATOR", "api")
+        print(f"curator     = {mode}")
+        print(f"daily-calls = {hub.setting('curator', 'daily_calls', 'CTX_CURATOR_DAILY_CALLS', curator.DEFAULT_DAILY_CALLS)}")
+        print(f"model       = {hub.setting('curator', 'model', 'CTX_CURATOR_MODEL') or '(기본)'}")
+        return 0
+    section, key, allowed = CONFIG_KEYS[args.key]
+    if args.value is None:
+        print(hub.setting(section, key))
+        return 0
+    value: object = args.value
+    if allowed and value not in allowed:
+        sys.exit(f"{args.key}는 {', '.join(allowed)} 중 하나여야 합니다.")
+    if args.key == "daily-calls":
+        value = int(value)
+    if args.key == "model" and value in ("", "default"):
+        value = None
+    hub.set_setting(section, key, value)
+    if args.key == "curator" and value == "claude":
+        found = shutil.which("claude")
+        if not found:
+            sys.exit("claude 명령을 찾지 못했습니다. Claude Code를 설치하고 로그인한 뒤 다시 실행하세요.")
+        hub.set_setting("curator", "command", found)
+    hub.commit(f"config: {args.key}")
+    extractor = curator.default_extractor(hub)
+    print(f"{args.key} = {value}" + ("" if args.key != "curator" or value == "off" else
+          f" ({'사용 가능' if extractor else '사용 불가: 설정을 확인하세요'})"))
+    return 0
+
+
 def cmd_hook(args) -> int:
     return hooks.run(args.action, _hub(args))
 
@@ -438,7 +480,7 @@ def cmd_daemon(args) -> int:
         while True:
             try:
                 adapters.ingest(hub)
-                curator.curate(hub, curator.default_extractor())
+                curator.curate(hub, curator.default_extractor(hub))
             except Exception as exc:
                 hub.log(f"daemon: {exc!r}")
             time.sleep(args.interval)
@@ -617,6 +659,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--include-proposed", action="store_true", help="proposed 기억도 가져와 검토 대기에 넣기")
     p.add_argument("--no-merge-by-name", action="store_true", help="같은 이름의 git 아닌 폴더를 합치지 않음")
     p.set_defaults(func=cmd_import)
+
+    p = command("config", "설정 보기·바꾸기 (~/context-hub/config.toml)",
+                epilog="예: ctx config curator claude      Claude Code 구독으로 큐레이터 켜기\n"
+                       "    ctx config daily-calls 10      하루 큐레이터 호출 상한\n"
+                       "    ctx config curator off")
+    p.add_argument("key", nargs="?", choices=sorted(CONFIG_KEYS), help="설정 이름 (생략하면 전체 보기)")
+    p.add_argument("value", nargs="?", help="새 값 (생략하면 현재 값)")
+    p.set_defaults(func=cmd_config)
 
     p = command("hook", "클라이언트 훅 진입점 (JSON을 표준 입력으로 받음)")
     p.add_argument("action", choices=["start", "prompt", "flush"])

@@ -260,3 +260,33 @@ def test_unassigned_sessions_are_retried_after_registry_changes(hub, svc, tmp_pa
     assert len(curator.pending(hub, quiet_seconds=0)) == 1
     assert curator.curate(hub, fake, quiet_seconds=0).sessions == 1
     assert curator.pending(hub, quiet_seconds=0) == []
+
+
+def test_config_file_enables_claude_curator_even_with_short_path(hub, svc, tmp_path, monkeypatch, run_ctx):
+    """GUI clients run hooks without the shell PATH; config.toml must still work."""
+    import stat
+    fake = tmp_path / "bin" / "claude"
+    fake.parent.mkdir()
+    fake.write_text(f"""#!{__import__('sys').executable}
+import json, sys
+sys.stdin.read()
+out = {{"operations": [], "now": {{"has_update": True, "goal": "", "in_progress": [], "next": ["설정 파일로 켜짐"], "blockers": [], "done": []}}}}
+print(json.dumps({{"is_error": False, "result": json.dumps(out), "structured_output": out}}))
+""")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.delenv("CTX_CURATOR")
+    monkeypatch.setenv("PATH", f"{fake.parent}:{os.environ['PATH']}")
+    assert "사용 가능" in run_ctx("config", "curator", "claude").stdout
+    run_ctx("config", "daily-calls", "5")
+    shown = run_ctx("config").stdout
+    assert "curator     = claude" in shown and "daily-calls = 5" in shown
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    session(hub, svc, [("user", LONG)])
+    report = curator.curate(hub, curator.default_extractor(hub), quiet_seconds=0)
+    assert report.now_updates == 1 and not report.errors
+    assert knowledge.load_now(hub, "svc").sections["다음"] == ["설정 파일로 켜짐"]
+    monkeypatch.setenv("CTX_CURATOR", "off")
+    assert curator.default_extractor(hub) is None, "environment overrides the file"
+    monkeypatch.delenv("CTX_CURATOR")
+    run_ctx("config", "curator", "off")
+    assert curator.default_extractor(hub) is None

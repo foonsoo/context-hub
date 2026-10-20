@@ -197,6 +197,38 @@ class Hub:
             self.save_projects(projects)
         return project
 
+    # settings ---------------------------------------------------------------
+    @property
+    def config_path(self) -> Path:
+        return self.root / "config.toml"
+
+    def config(self) -> dict[str, Any]:
+        try:
+            return tomllib.loads(self.config_path.read_text())
+        except (FileNotFoundError, tomllib.TOMLDecodeError):
+            return {}
+
+    def setting(self, section: str, key: str, env: str | None = None, default: Any = None) -> Any:
+        """Environment variable first, then config.toml, then the default."""
+        if env and os.environ.get(env):
+            return os.environ[env]
+        return (self.config().get(section) or {}).get(key, default)
+
+    def set_setting(self, section: str, key: str, value: Any) -> None:
+        data = self.config()
+        if value is None:
+            (data.get(section) or {}).pop(key, None)
+        else:
+            data.setdefault(section, {})[key] = value
+        lines = ["# Context Hub settings. Environment variables (CTX_CURATOR ...) override these.\n"]
+        for name, values in data.items():
+            if not values:
+                continue
+            lines.append(f"\n[{name}]\n")
+            for k, v in values.items():
+                lines.append(f"{k} = {json.dumps(v, ensure_ascii=False)}\n")
+        self.config_path.write_text("".join(lines))
+
     # git history ------------------------------------------------------------
     def is_git(self) -> bool:
         return (self.root / ".git").exists()

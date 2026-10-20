@@ -162,6 +162,8 @@ class ClaudeCliExtractor:
         self.command = command or os.environ.get("CTX_CURATOR_COMMAND") or "claude"
         if not shutil.which(self.command.split()[0]):
             raise RuntimeError(f"{self.command} not found")
+        # GUI clients run hooks with a short PATH; keep the absolute path
+        self.command = " ".join([shutil.which(self.command.split()[0]), *self.command.split()[1:]])
         self.model = model or os.environ.get("CTX_CURATOR_MODEL")
 
     def extract(self, prompt: str) -> dict[str, Any]:
@@ -183,13 +185,17 @@ class ClaudeCliExtractor:
         return output if isinstance(output, dict) else json.loads(data.get("result") or "{}")
 
 
-def default_extractor() -> Extractor | None:
-    """CTX_CURATOR: off | claude (Claude Code CLI) | api (default: Anthropic API if configured)."""
-    mode = os.environ.get("CTX_CURATOR", "").casefold()
+def default_extractor(hub: Hub | None = None) -> Extractor | None:
+    """Mode from CTX_CURATOR or config.toml [curator] mode: off | claude | api (default)."""
+    hub = hub or Hub()
+    mode = str(hub.setting("curator", "mode", "CTX_CURATOR", "api")).casefold()
     if mode in ("off", "0", "false", "none"):
         return None
+    model = hub.setting("curator", "model", "CTX_CURATOR_MODEL")
     try:
-        return ClaudeCliExtractor() if mode in ("claude", "claude-cli") else AnthropicExtractor()
+        if mode in ("claude", "claude-cli"):
+            return ClaudeCliExtractor(command=hub.setting("curator", "command", "CTX_CURATOR_COMMAND"), model=model)
+        return AnthropicExtractor(model=model)
     except Exception:
         return None
 
@@ -239,7 +245,7 @@ def _mark(hub: Hub, path: Path, lines: int, unassigned_from: int | None = None) 
 
 
 def _budget_ok(hub: Hub) -> bool:
-    limit = int(os.environ.get("CTX_CURATOR_DAILY_CALLS", DEFAULT_DAILY_CALLS))
+    limit = int(hub.setting("curator", "daily_calls", "CTX_CURATOR_DAILY_CALLS", DEFAULT_DAILY_CALLS))
     usage = hub.read_state("curator").get("usage", {})
     return usage.get(today(), 0) < limit
 

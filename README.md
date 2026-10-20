@@ -75,16 +75,20 @@ ctx review          # y=승인 n=기각 e=편집 후 승인 s=건너뛰기
 pip install 'context-hub[llm]'
 export ANTHROPIC_API_KEY=...       # 또는 `ant auth login`
 
-# B. API 키 없이 Claude Code 구독 사용 (구독 사용량을 씁니다)
-export CTX_CURATOR=claude
+# B. API 키 없이 Claude Code 구독(Pro/Max) 사용 — 구독 사용량을 씁니다
+ctx config curator claude
+ctx config daily-calls 10          # 하루 호출 상한 (기본 40)
 
 ctx curate --now
 ```
 
+설정은 `~/context-hub/config.toml`에 저장되므로 Codex 앱처럼 셸 설정을 읽지 않는 클라이언트의 훅에서도 적용됩니다.
+같은 이름의 환경변수(`CTX_CURATOR`, `CTX_CURATOR_DAILY_CALLS`, `CTX_CURATOR_MODEL`)가 있으면 그것이 우선합니다.
+
 B는 도구·MCP·사용자 설정·세션 저장 없이 `claude -p`를 실행하고, 우리 훅이 다시 불리지 않게 막습니다.
 
-- 기본 모델은 `claude-opus-5-5`, effort `medium`. `CTX_CURATOR_MODEL`, `CTX_CURATOR_EFFORT`로 바꿉니다.
-- 하루 호출 한도 `CTX_CURATOR_DAILY_CALLS`(기본 40). `CTX_CURATOR=off`로 끕니다.
+- API 방식의 기본 모델은 `claude-opus-5-5`, effort `medium`입니다. `ctx config model <모델>`로 바꿉니다.
+- 끄기: `ctx config curator off`.
 - 세션은 10분 동안 조용해진 뒤 처리합니다. 근거 줄 범위가 맞지 않는 제안은 버립니다.
 - git 저장소가 아닌 폴더에서 한 대화는 사용자가 자주 부른 프로젝트로 배정하고, 정하지 못하면 보류했다가 프로젝트·별칭이 바뀌면 다시 정리합니다.
 - 기존 `active` 지식은 절대 직접 바꾸지 않고 검토 대기열로 보냅니다. 사람이 고친 페이지도 마찬가지입니다.
