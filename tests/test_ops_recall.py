@@ -51,7 +51,9 @@ def test_note_targets(hub, projects, isolated_env, make_repo):
     a, _ = projects
     assert ops.note(hub, "B 프로젝트 방식을 여기도 쓰기로 함", cwd=str(a)).project == "alpha"
     assert ops.note(hub, "b프로젝트 환불은 3일 내 처리", cwd=str(isolated_env)).project == "b-billing"
-    assert ops.note(hub, "아무 프로젝트도 아닌 메모", cwd=str(isolated_env)).project == "global"
+    loose = ops.note(hub, "아무 프로젝트도 아닌 메모", cwd=str(isolated_env))
+    assert not loose.ok and "projects add" in loose.message, "no silent project or global fallback"
+    assert ops.note(hub, "아무 프로젝트도 아닌 메모", cwd=str(isolated_env), project="global").project == "global"
     assert ops.note(hub, "x", project="없는거").ok is False
     repo = make_repo("newrepo", remote="git@github.com:me/newrepo.git")
     assert ops.note(hub, "새 저장소 첫 기록", cwd=str(repo / ".")).project == "newrepo"

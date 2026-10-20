@@ -44,9 +44,9 @@ def guess_type(text: str) -> str:
     head = text.strip().casefold()[:40]
     rules = [
         ("decision", ("결정", "decided", "decision", "합의", "하기로")),
+        ("constraint", ("제약", "금지", "must not", "never ", "반드시", "절대")),
         ("task", ("todo", "할 일", "할일", "해야 ", "task:")),
         ("preference", ("선호", "prefer", "좋아함", "원함")),
-        ("constraint", ("제약", "금지", "must not", "never ", "반드시")),
         ("procedure", ("절차", "방법:", "how to", "실행 방법", "순서")),
     ]
     for kind, words in rules:
@@ -125,9 +125,16 @@ def new_page(kind: str, title: str, body: str, project: str | None, sources: lis
     return Page(meta=meta, body=body.strip())
 
 
+_KIND_PREFIX = re.compile(r"^(결정|decision|todo|할 ?일|사실|fact|선호|제약|절차)\s*[:：]\s*", re.I)
+
+
+def strip_prefix(text: str) -> str:
+    return _KIND_PREFIX.sub("", text)
+
+
 def title_from(text: str, limit: int = 60) -> str:
     first = next((line.strip(" #-*>\t") for line in text.strip().splitlines() if line.strip()), "")
-    first = re.sub(r"^(결정|decision|todo|할 ?일|사실|fact|선호|제약|절차)\s*[:：]\s*", "", first, flags=re.I)
+    first = strip_prefix(first)
     return first if len(first) <= limit else first[: limit - 1].rstrip() + "…"
 
 

@@ -15,7 +15,8 @@ from .recall import recall
 
 SUPPORTED_PROTOCOLS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 INSTRUCTIONS = (
-    "Context Hub shares context across sessions and AI clients. At the start of a task call "
+    "Context Hub shares context across sessions and AI clients. Always pass `cwd` (the absolute "
+    "path of the current working directory). At the start of a task call "
     "`recall` once with the user's request. When a decision, constraint, verified fact or "
     "preference appears, call `note`. Before finishing, call `handoff` with what was done and "
     "what comes next. Never store secrets. Items marked [proposed] are unreviewed."
@@ -24,7 +25,7 @@ PROJECT_PROP = {
     "type": "string",
     "description": "Project name or alias. Omit to infer from the question/working directory. '*' = all projects (recall only).",
 }
-CWD_PROP = {"type": "string", "description": "Absolute path of the current working directory."}
+CWD_PROP = {"type": "string", "description": "Absolute path of the current working directory. Always pass it; the server's own directory may differ."}
 LIST_PROP = {"type": "array", "items": {"type": "string"}}
 
 TOOLS = [

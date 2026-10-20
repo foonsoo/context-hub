@@ -67,7 +67,8 @@ def test_uninstall_removes_only_ours(hub, fake_clients, isolated_env, run_ctx):
     run_ctx("uninstall")
     data = json.loads(settings.read_text())
     assert data["hooks"] == {"Stop": [{"hooks": [{"type": "command", "command": "keep.sh"}]}]}
-    assert setup.RULE_BEGIN not in (isolated_env / ".claude" / "CLAUDE.md").read_text()
+    assert not (isolated_env / ".claude" / "CLAUDE.md").exists(), "a file holding only our rule is removed"
+    assert "hooks" in data
     assert "context-hub" not in json.loads((isolated_env / ".cursor" / "mcp.json").read_text())["mcpServers"]
     assert (isolated_env / "context-hub" / "projects.toml").exists(), "knowledge is kept"
 

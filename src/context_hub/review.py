@@ -103,7 +103,7 @@ def _indent(text: str, limit: int = 600) -> str:
     return "\n".join("    " + line for line in text.splitlines())
 
 
-def _update_now_decision(hub: Hub, page: knowledge.Page) -> None:
+def update_now_decision(hub: Hub, page: knowledge.Page) -> None:
     if page.type != "decision" or page.project == "global":
         return
     projects = hub.projects()
@@ -123,10 +123,25 @@ def forget_in_now(hub: Hub, page: knowledge.Page) -> None:
             knowledge.save_now(hub, doc)
 
 
+def for_page(hub: Hub, page_id: str) -> list[Item]:
+    return [i for i in pending(hub) if page_id in (i.data.get("page_id"), i.data.get("target_id"))]
+
+
+def close_for_page(hub: Hub, page_id: str) -> int:
+    items = for_page(hub, page_id)
+    for item in items:
+        _close(hub, item)
+    return len(items)
+
+
 def approve(hub: Hub, item: Item) -> str:
     kind = item.kind
     page = _page(hub, item.data.get("page_id"))
     target = _page(hub, item.data.get("target_id"))
+    for candidate in (page, target):
+        if candidate and candidate.status in ("archived", "superseded"):
+            _close(hub, item)
+            return f"이미 보관·대체된 지식이라 승인하지 않고 항목을 닫았습니다: {candidate.title}"
     if kind == "new":
         if not page:
             _close(hub, item)
@@ -134,7 +149,7 @@ def approve(hub: Hub, item: Item) -> str:
         page.meta["status"] = "active"
         page.meta["reviewed_by"] = "user"
         knowledge.save(hub, page, by_curator=not page.human_edited())
-        _update_now_decision(hub, page)
+        update_now_decision(hub, page)
         message = f"승인: {page.title}"
     elif kind == "append":
         if not target:
@@ -160,7 +175,7 @@ def approve(hub: Hub, item: Item) -> str:
         target.meta["superseded_by"] = page.id
         knowledge.save(hub, target, by_curator=not target.human_edited())
         forget_in_now(hub, target)
-        _update_now_decision(hub, page)
+        update_now_decision(hub, page)
         message = f"대체 승인: {target.title} → {page.title}"
     elif kind == "dispute":
         if not target:

@@ -24,7 +24,7 @@ _PATTERNS = [
         r"(?i)\b([A-Z0-9_\-]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY|CLIENT_SECRET)"
         r"(?!S\b|S_)[A-Z0-9_]*\s*[=:]\s*)"  # *_TOKENS / max_output_tokens are counts, not secrets
         r"(?![\s\"']*(?:\$|\[REDACTED|<|\*{3}|\d+\b|true\b|false\b|null\b|none\b))"
-        r"[\"']?[^\s\"']{6,}[\"']?"
+        r"[\"']?[^\s\"',;)]{6,}[\"']?"
     ),
     re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]{3,}(@)"),
 ]

@@ -15,7 +15,7 @@ from .hub import Hub
 RULE_BEGIN = "<!-- context-hub:begin -->"
 RULE_END = "<!-- context-hub:end -->"
 RULE_TEXT = """## Context Hub
-- 작업을 시작하면 context-hub의 `recall`을 사용자 요청으로 한 번 호출한다.
+- 작업을 시작하면 context-hub의 `recall`을 사용자 요청으로 한 번 호출한다. 모든 호출에 `cwd`(현재 작업 폴더)를 넘긴다.
 - 결정, 제약, 검증된 사실, 선호가 생기면 `note`로 남긴다. 비밀 정보는 남기지 않는다.
 - 끝낼 때 `handoff`로 한 일과 다음 할 일을 남긴다."""
 HOOK_MARK = "context-hub"
@@ -38,6 +38,8 @@ class SetupReport:
         lines = []
         for step in self.steps:
             mark = "✓" if step.done else ("✗" if step.error else "·")
+            if applied and not step.done and not step.error and step.action != "건너뜀":
+                step.detail += " (변경 없음)"
             line = f"{mark} [{step.client}] {step.action}: {step.detail}"
             if step.error:
                 line += f"  ({step.error})"
@@ -92,7 +94,11 @@ def remove_rule(path: Path) -> bool:
         return False
     start = text.index(RULE_BEGIN)
     end = text.index(RULE_END) + len(RULE_END)
-    path.write_text((text[:start].rstrip("\n") + "\n" + text[end:].lstrip("\n")).lstrip("\n"), encoding="utf-8")
+    rest = (text[:start].rstrip("\n") + "\n" + text[end:].lstrip("\n")).strip("\n")
+    if rest:
+        path.write_text(rest + "\n", encoding="utf-8")
+    else:
+        path.unlink()  # the file only held our rule
     return True
 
 
@@ -152,6 +158,8 @@ def remove_claude_hooks(settings_path: Path) -> bool:
             hooks[event] = kept
         if not hooks[event]:
             del hooks[event]
+    if not hooks:
+        data.pop("hooks", None)
     if changed:
         _backup(settings_path)
         settings_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -169,6 +177,14 @@ def merge_mcp_json(path: Path, command: list[str]) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return True
+
+
+def _remove_server(argv: list[str]) -> tuple[bool, str | None]:
+    """(removed, error). 'not found' is not an error: there was nothing to remove."""
+    error = _run(argv)
+    if error and any(w in error.casefold() for w in ("not found", "no mcp server", "does not exist", "no such")):
+        return False, None
+    return error is None, error
 
 
 def _run(argv: list[str]) -> str | None:
@@ -245,14 +261,14 @@ def unregister(clients: list[str] | None = None) -> SetupReport:
     codex_dir = Path(os.environ.get("CODEX_HOME") or home / ".codex")
     if "claude-code" in wanted:
         if shutil.which("claude"):
-            error = _run(["claude", "mcp", "remove", "--scope", "user", "context-hub"])
-            report.steps.append(Step("claude-code", "MCP 해제", "claude mcp remove", done=error is None, error=error))
+            done, error = _remove_server(["claude", "mcp", "remove", "--scope", "user", "context-hub"])
+            report.steps.append(Step("claude-code", "MCP 해제", "claude mcp remove context-hub", done=done, error=error))
         report.steps.append(Step("claude-code", "규칙 제거", str(claude_dir / "CLAUDE.md"), done=remove_rule(claude_dir / "CLAUDE.md")))
         report.steps.append(Step("claude-code", "훅 제거", str(claude_dir / "settings.json"), done=remove_claude_hooks(claude_dir / "settings.json")))
     if "codex" in wanted:
         if shutil.which("codex"):
-            error = _run(["codex", "mcp", "remove", "context-hub"])
-            report.steps.append(Step("codex", "MCP 해제", "codex mcp remove", done=error is None, error=error))
+            done, error = _remove_server(["codex", "mcp", "remove", "context-hub"])
+            report.steps.append(Step("codex", "MCP 해제", "codex mcp remove context-hub", done=done, error=error))
         report.steps.append(Step("codex", "규칙 제거", str(codex_dir / "AGENTS.md"), done=remove_rule(codex_dir / "AGENTS.md")))
     if "cursor" in wanted:
         path = home / ".cursor" / "mcp.json"

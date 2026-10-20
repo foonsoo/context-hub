@@ -182,13 +182,13 @@ def _occurrences(text: str, label: str) -> list[tuple[int, int]]:
 
 def mentioned_projects(text: str, projects: dict[str, Project]) -> tuple[list[str], list[list[str]]]:
     """Return (mentioned slugs, ambiguous groups) for project names inside ``text``."""
-    folded = re.sub(r"\s+", " ", text.casefold())
+    folded = re.sub(r"[\s_\-]+", " ", text.casefold())
     variants = [folded, folded.replace(" ", "")]
     matches: list[tuple[int, int, int, str]] = []
     for variant_index, variant in enumerate(variants):
         for project in projects.values():
             for label in project.labels():
-                label = re.sub(r"\s+", " ", label.casefold()).strip()
+                label = re.sub(r"[\s_\-]+", " ", label.casefold()).strip()
                 if variant_index == 1:
                     label = label.replace(" ", "")
                 if not label:
@@ -215,12 +215,29 @@ def mentioned_projects(text: str, projects: dict[str, Project]) -> tuple[list[st
     return slugs, [list(group) for group in ambiguous]
 
 
+def normalize_label(value: str) -> str:
+    return re.sub(r"[\s_\-]+", "", value.casefold())
+
+
 def _match_label(value: str, projects: dict[str, Project]) -> list[str]:
-    wanted = re.sub(r"\s+", "", value.casefold())
+    wanted = normalize_label(value)
     return [
         project.slug for project in projects.values()
-        if any(re.sub(r"\s+", "", label.casefold()) == wanted for label in project.labels())
+        if any(normalize_label(label) == wanted for label in project.labels())
     ]
+
+
+def label_owner(value: str, projects: dict[str, Project], exclude: str | None = None) -> str | None:
+    found = [slug for slug in _match_label(value, projects) if slug != exclude]
+    return found[0] if found else None
+
+
+def suggest(value: str, projects: dict[str, Project]) -> list[str]:
+    import difflib
+
+    labels = {normalize_label(l): p.slug for p in projects.values() for l in p.labels()}
+    close = difflib.get_close_matches(normalize_label(value), list(labels), n=3, cutoff=0.6)
+    return list(dict.fromkeys(labels[c] for c in close))
 
 
 def resolve(hub: Hub, cwd: str | None = None, text: str | None = None,

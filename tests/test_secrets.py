@@ -64,3 +64,7 @@ def test_counts_and_references_are_not_secrets(text):
 ])
 def test_real_world_leaks_from_transcripts(text, leak):
     assert leak not in redact(text)
+
+
+def test_trailing_punctuation_survives():
+    assert redact("password=hunter2hunter2, 다음") == "password=[REDACTED], 다음"

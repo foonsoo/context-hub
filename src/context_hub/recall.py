@@ -40,7 +40,7 @@ def _item(row: Row, extra: str = "", snippet_limit: int = SNIPPET) -> str:
     if row.type == "task" and row.done:
         kind = "완료"
     line = f"- [{row.status} · {kind}] {row.title}"
-    body = " ".join(row.body.split())
+    body = knowledge.strip_prefix(" ".join(row.body.split()))
     title = row.title.rstrip("…")
     if body.startswith(title):
         body = body[len(title):].lstrip(" .:—-")
