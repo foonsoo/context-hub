@@ -49,10 +49,15 @@ def _prompt(hub: Hub, payload: dict) -> None:
     prompt = (payload.get("prompt") or "").strip()
     if len(prompt) < 4:
         return
-    result = recall(hub, prompt, cwd=payload.get("cwd"), budget=PROMPT_BUDGET, include_now=False)
-    mentions_other = result.resolution.how == "text" and result.resolution.slugs
-    if result.best_score < PROMPT_MIN_SCORE and not mentions_other:
-        return
+    cwd = payload.get("cwd")
+    res = resolve(hub, cwd=cwd, text=prompt)
+    other = res.how == "text" and bool(res.slugs) and res.slugs != [res.cwd_slug]
+    # another project named: bring its NOW.md too; otherwise only relevant knowledge
+    result = recall(hub, prompt, cwd=cwd, budget=PROMPT_BUDGET, include_now=other)
+    relevant = bool(result.item_ids) and result.best_score >= PROMPT_MIN_SCORE
+    named = other and (bool(result.item_ids) or "## 진행 상태" in result.text)
+    if not (relevant or named):
+        return  # never inject an empty "nothing found" block
     _emit(payload.get("hook_event_name") or "UserPromptSubmit",
           "Context Hub · 이 요청과 관련된 기록입니다 ([proposed]는 미검토):\n" + result.text)
 

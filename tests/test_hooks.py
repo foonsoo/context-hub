@@ -87,3 +87,14 @@ def test_hook_disable_env_prevents_recursion(hub, svc, capsys, monkeypatch):
     ops.handoff(hub, cwd=str(svc), next_steps=["x"])
     monkeypatch.setenv("CTX_HOOK_DISABLE", "1")
     assert run(hub, "start", {"cwd": str(svc)}, capsys) is None
+
+
+def test_prompt_never_injects_empty_results(hub, svc, tmp_path, capsys):
+    other = tmp_path / "ws"
+    other.mkdir()
+    hub.add_project(Project("claude-workspace", name="Claude 작업공간", paths=[str(other)]))
+    assert run(hub, "prompt", {"cwd": str(svc), "prompt": "Claude 작업공간 상태 알려줘"}, capsys) is None
+    assert run(hub, "prompt", {"cwd": str(svc), "prompt": "claude code 새로 시작해줄수 있어?"}, capsys) is None
+    ops.handoff(hub, cwd=str(other), next_steps=["MCP 재시작 확인"])
+    out = run(hub, "prompt", {"cwd": str(svc), "prompt": "Claude 작업공간 상태 알려줘"}, capsys)
+    assert "MCP 재시작 확인" in out["hookSpecificOutput"]["additionalContext"]
