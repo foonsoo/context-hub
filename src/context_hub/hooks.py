@@ -19,7 +19,6 @@ from .recall import recall
 
 START_BUDGET = 600
 PROMPT_BUDGET = 1200
-PROMPT_MIN_SCORE = 0.5
 
 
 def _emit(event: str, text: str) -> None:
@@ -54,7 +53,7 @@ def _prompt(hub: Hub, payload: dict) -> None:
     other = res.how == "text" and bool(res.slugs) and res.slugs != [res.cwd_slug]
     # another project named: bring its NOW.md too; otherwise only relevant knowledge
     result = recall(hub, prompt, cwd=cwd, budget=PROMPT_BUDGET, include_now=other)
-    relevant = bool(result.item_ids) and result.best_score >= PROMPT_MIN_SCORE
+    relevant = bool(result.item_ids) and result.relevant
     named = other and (bool(result.item_ids) or "## 진행 상태" in result.text)
     if not (relevant or named):
         return  # never inject an empty "nothing found" block

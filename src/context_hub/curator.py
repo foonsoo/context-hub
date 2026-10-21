@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from . import inbox, knowledge, review
+from . import embeddings, inbox, knowledge, review
 from .hub import Hub, today
 from .identity import mentioned_projects, register_cwd, repo_info
 from .index import Index, Row
@@ -456,7 +456,7 @@ def curate(hub: Hub, extractor: Extractor | None = None, quiet_seconds: float = 
                 if not _budget_ok(hub):
                     report.skipped.append("오늘 큐레이터 호출 한도에 도달했습니다. 남은 세션은 다음에 처리합니다.")
                     return report
-                with Index(hub) as index:
+                with Index(hub, embeddings.load(hub)) as index:
                     query = " ".join((e["text"] or "")[:200] for e in chunk if e["role"] == "user")[:4000]
                     existing = [row for _, row in index.search(query, [project, "global"], limit=12)]
                     recent = index.pages([project], ("active", "proposed", "disputed"))[:RECENT_CONTEXT]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from . import knowledge
+from . import embeddings, knowledge
 from .hub import Hub
 from .identity import Resolution, resolve
 from .index import Index, Row
@@ -20,6 +20,7 @@ class RecallResult:
     resolution: Resolution
     item_ids: list[str] = field(default_factory=list)
     best_score: float = 0.0
+    relevant: bool = False  # strong enough to inject without being asked (hooks)
 
 
 def _snippet(body: str, limit: int = SNIPPET) -> str:
@@ -139,8 +140,10 @@ def recall(hub: Hub, query: str, cwd: str | None = None, project: str | None = N
 
     search_scope = (scope + ["global"]) if scope else ["global"]
     wants_tasks = has_any(query, TASK_WORDS)
-    with Index(hub) as index:
+    relevant = False
+    with Index(hub, embeddings.load(hub)) as index:
         hits = index.search(query, search_scope, limit=24)
+        relevant = index.relevant(hits)
         if wants_tasks or (has_any(query, STATUS_WORDS) and res.slugs):
             tasks = [r for r in index.pages([s for s in scope if s != "global"] or ["global"], ("active", "proposed"))
                      if r.type == "task" and not r.done]
@@ -188,4 +191,4 @@ def recall(hub: Hub, query: str, cwd: str | None = None, project: str | None = N
                 ids.append(row.id)
     if len(lines) == 1 + len(_notices(res, projects)):
         lines.append("관련 지식이 아직 없습니다. 결정·제약·검증된 사실이 생기면 note로 남겨 주세요.")
-    return RecallResult(text="\n".join(lines), resolution=res, item_ids=ids, best_score=best)
+    return RecallResult(text="\n".join(lines), resolution=res, item_ids=ids, best_score=best, relevant=relevant)

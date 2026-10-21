@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import __version__, adapters, curator, hooks, knowledge, legacy, ops, review, setup
+from . import __version__, adapters, curator, embeddings, hooks, knowledge, legacy, ops, review, setup
 from .hub import Hub, Project, default_root, slugify
 from .identity import (
     canonical_path, label_owner, normalize_label, project_for_cwd, repo_info, resolve,
@@ -328,14 +328,21 @@ def cmd_status(args) -> int:
     print(f"검토 대기: {len(review.pending(hub))}개")
     print(f"정리 대기 세션: {len(curator.pending(hub, quiet_seconds=0))}개")
     print(f"LLM 큐레이터: {extractor} · 오늘 호출 {usage.get(knowledge.today(), 0)}회")
+    if embeddings.enabled(hub):
+        with Index(hub) as index:
+            vectors = index.conn.execute("SELECT count(*) FROM vectors").fetchone()[0]
+        print(f"의미 검색: 켜짐 · 벡터 {vectors}/{len(rows)}")
+    else:
+        print("의미 검색: 꺼짐 (켜기: pip install 'context-hub[embed]' 후 ctx config embeddings on)")
     return 0
 
 
 def cmd_reindex(args) -> int:
     hub = _require(_hub(args))
-    with Index(hub) as index:
+    with Index(hub, embeddings.load(hub)) as index:
         count = index.rebuild()
-    print(f"인덱스를 다시 만들었습니다: 페이지 {count}개")
+        vectors, _ = index.sync_vectors()
+    print(f"인덱스를 다시 만들었습니다: 페이지 {count}개" + (f", 벡터 {vectors}개" if vectors else ""))
     return 0
 
 
@@ -423,6 +430,7 @@ def _import(hub: Hub, db: Path, apply: bool, include_proposed: bool, merge_by_na
 
 
 CONFIG_KEYS = {
+    "embeddings": ("search", "embeddings", ("on", "off")),
     "curator": ("curator", "mode", ("off", "claude", "api")),
     "daily-calls": ("curator", "daily_calls", None),
     "model": ("curator", "model", None),
@@ -436,10 +444,13 @@ def cmd_config(args) -> int:
     if not args.key:
         print(f"설정 파일: {hub.config_path}")
         mode = hub.setting("curator", "mode", "CTX_CURATOR", "api")
+        print(f"embeddings  = {'on' if embeddings.enabled(hub) else 'off'}")
         print(f"curator     = {mode}")
         print(f"daily-calls = {hub.setting('curator', 'daily_calls', 'CTX_CURATOR_DAILY_CALLS', curator.DEFAULT_DAILY_CALLS)}")
         print(f"model       = {hub.setting('curator', 'model', 'CTX_CURATOR_MODEL') or '(기본)'}")
         return 0
+    if args.key == "embeddings" and args.value == "on":
+        return _enable_embeddings(hub)
     section, key, allowed = CONFIG_KEYS[args.key]
     if args.value is None:
         print(hub.setting(section, key))
@@ -461,6 +472,32 @@ def cmd_config(args) -> int:
     extractor = curator.default_extractor(hub)
     print(f"{args.key} = {value}" + ("" if args.key != "curator" or value == "off" else
           f" ({'사용 가능' if extractor else '사용 불가: 설정을 확인하세요'})"))
+    return 0
+
+
+def _enable_embeddings(hub: Hub) -> int:
+    if not embeddings.installed():
+        print("임베딩 패키지가 없습니다. 먼저 설치하세요:\n"
+              f"  {sys.executable} -m pip install 'context-hub[embed]'")
+        return 1
+    hub.set_setting("search", "embeddings", "on")
+    print("모델을 불러옵니다 (처음에는 약 220MB를 내려받습니다)…", flush=True)
+    embedder = embeddings.load(hub)
+    if not embedder:
+        hub.set_setting("search", "embeddings", "off")
+        print("모델을 불러오지 못했습니다. ~/context-hub/.state/ctx.log를 확인하세요.")
+        return 1
+    with Index(hub, embedder) as index:
+        rows = index.pages()
+        done = 0
+        while True:
+            count, left = index.sync_vectors(rows, limit=128)
+            done += count
+            print(f"\r지식 벡터 {done}/{done + left}", end="", flush=True)
+            if not left:
+                break
+    print("\n의미 검색을 켰습니다. 끄려면: ctx config embeddings off")
+    hub.commit("config: embeddings on")
     return 0
 
 
